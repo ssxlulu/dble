@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -49,7 +49,12 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
         SQLExprTableSource tableSource = insert.getTableSource();
         SchemaInfo schemaInfo = SchemaUtil.getSchemaInfo(sc.getUser(), schemaName, tableSource);
         if (!ServerPrivileges.checkPrivilege(sc, schemaInfo.getSchema(), schemaInfo.getTable(), CheckType.INSERT)) {
-            String msg = "The statement DML privilege check is not passed, sql:" + stmt;
+            String msg = "The statement DML privilege check is not passed, sql:" + stmt.toString().replaceAll("[\\t\\n\\r]", " ");
+            throw new SQLNonTransientException(msg);
+        }
+
+        if (insert.getValuesList().isEmpty()) {
+            String msg = "Insert syntax error,no values in sql";
             throw new SQLNonTransientException(msg);
         }
 
@@ -185,10 +190,10 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
 
 
     /**
-     * @param schemaInfo SchemaInfo
-     * @param rrs RouteResultset
+     * @param schemaInfo      SchemaInfo
+     * @param rrs             RouteResultset
      * @param partitionColumn partitionColumn
-     * @param insertStmt insertStmt
+     * @param insertStmt      insertStmt
      * @throws SQLNonTransientException if not find an valid data node
      */
     private void parserSingleInsert(SchemaInfo schemaInfo, RouteResultset rrs, String partitionColumn,
@@ -209,7 +214,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
 
         RouteResultsetNode[] nodes = new RouteResultsetNode[1];
         nodes[0] = new RouteResultsetNode(tableConfig.getDataNodes().get(nodeIndex), rrs.getSqlType(),
-                                          RouterUtil.removeSchema(statementToString(insertStmt), schemaInfo.getSchema()));
+                RouterUtil.removeSchema(statementToString(insertStmt), schemaInfo.getSchema()));
 
         // insert into .... on duplicateKey
         //such as :INSERT INTO TABLEName (a,b,c) VALUES (1,2,3) ON DUPLICATE KEY UPDATE b=VALUES(b);
@@ -233,10 +238,10 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
     /**
      * insert into .... select .... or insert into table() values (),(),....
      *
-     * @param schemaInfo SchemaInfo
-     * @param rrs RouteResultset
+     * @param schemaInfo      SchemaInfo
+     * @param rrs             RouteResultset
      * @param partitionColumn partitionColumn
-     * @param insertStmt insertStmt
+     * @param insertStmt      insertStmt
      * @throws SQLNonTransientException if the column size of values is not correct
      */
     private void parserBatchInsert(SchemaInfo schemaInfo, RouteResultset rrs, String partitionColumn,
@@ -291,14 +296,15 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
 
     /**
      * find the index of the partition column
-     * @param schemaInfo SchemaInfo
-     * @param insertStmt MySqlInsertStatement
+     *
+     * @param schemaInfo      SchemaInfo
+     * @param insertStmt      MySqlInsertStatement
      * @param partitionColumn partitionColumn
      * @return the index of the partition column
      * @throws SQLNonTransientException if not find
      */
     private int tryGetShardingColIndex(SchemaInfo schemaInfo, MySqlInsertStatement insertStmt, String partitionColumn)
-        throws SQLNonTransientException {
+            throws SQLNonTransientException {
 
         int shardingColIndex = getShardingColIndex(schemaInfo, insertStmt.getColumns(), partitionColumn);
         if (shardingColIndex != -1) return shardingColIndex;
@@ -311,7 +317,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
      *
      * @param schemaInfo SchemaInfo
      * @param insertStmt MySqlInsertStatement
-     * @param joinKey joinKey
+     * @param joinKey    joinKey
      * @return -1 means no join key,otherwise means the index
      * @throws SQLNonTransientException if not find
      */
@@ -352,7 +358,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
         // insert without columns :insert into t values(xxx,xxx)
         if (columns == null || columns.size() <= 0) {
             if (isAutoIncrement) {
-                autoIncrement = getPrimaryKeyIndex(schemaInfo, tc.getPrimaryKey());
+                autoIncrement = getIncrementKeyIndex(schemaInfo, tc.getTrueIncrementColumn());
             }
             colSize = orgTbMeta.getColumnsList().size();
             idxGlobal = getIdxGlobalByMeta(isGlobalCheck, orgTbMeta, sb, colSize);
@@ -360,8 +366,9 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
             genColumnNames(tc, isGlobalCheck, isAutoIncrement, sb, columns);
             colSize = columns.size();
             if (isAutoIncrement) {
+                getIncrementKeyIndex(schemaInfo, tc.getTrueIncrementColumn());
                 autoIncrement = columns.size();
-                sb.append(",").append(tc.getPrimaryKey());
+                sb.append(",").append(tc.getTrueIncrementColumn());
                 colSize++;
             }
             if (isGlobalCheck) {
@@ -411,7 +418,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
                 LOGGER.info(msg);
                 throw new SQLNonTransientException(msg);
             }
-            if (isAutoIncrement && simpleColumnName.equalsIgnoreCase(tc.getPrimaryKey())) {
+            if (isAutoIncrement && simpleColumnName.equalsIgnoreCase(tc.getTrueIncrementColumn())) {
                 String msg = "In insert Syntax, you can't set value for Autoincrement column!";
                 LOGGER.info(msg);
                 throw new SQLNonTransientException(msg);
@@ -458,11 +465,15 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
 
         int size = values.size();
         int checkSize = colSize - (autoIncrement < 0 ? 0 : 1) - (idxGlobal < 0 ? 0 : 1);
-        if (checkSize != size) {
-            String msg = "In insert Syntax, you can't set value for Autoincrement column!";
+        if (checkSize < size) {
+            String msg = "In insert Syntax, you can't set value for Autoincrement column! Or column count doesn't match value count";
             if (autoIncrement < 0) {
-                msg = "In insert Syntax, you can't set value for Global check column!";
+                msg = "In insert Syntax, you can't set value for Global check column! Or column count doesn't match value count";
             }
+            LOGGER.info(msg);
+            throw new SQLNonTransientException(msg);
+        } else if (checkSize > size) {
+            String msg = "Column count doesn't match value count";
             LOGGER.info(msg);
             throw new SQLNonTransientException(msg);
         }

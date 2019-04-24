@@ -1,16 +1,15 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
 package com.actiontech.dble.plan.node;
 
 import com.actiontech.dble.DbleServer;
-import com.actiontech.dble.config.model.SchemaConfig;
 import com.actiontech.dble.plan.util.ToStringUtil;
 
-import java.util.Collections;
 import java.util.HashSet;
+import java.util.Set;
 
 /**
  * NoNameNode eg:select 1,only exists selecteditems
@@ -29,8 +28,10 @@ public class NoNameNode extends PlanNode {
     public NoNameNode(String catalog, String sql) {
         this.catalog = catalog;
         this.sql = sql;
-        SchemaConfig schema = DbleServer.getInstance().getConfig().getSchemas().get(catalog);
-        this.setNoshardNode(new HashSet<>(Collections.singletonList(schema.getMetaDataNode())));
+        Set<String> set = new HashSet<>();
+        set.addAll(DbleServer.getInstance().getConfig().getDataNodes().keySet());
+        this.setNoshardNode(set);
+        this.keepFieldSchema = true;
     }
 
     @Override
@@ -42,6 +43,11 @@ public class NoNameNode extends PlanNode {
 
     @Override
     public String getPureName() {
+        return "";
+    }
+
+    @Override
+    public String getPureSchema() {
         return "";
     }
 

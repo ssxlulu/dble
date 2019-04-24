@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -569,7 +569,7 @@ public final class PlanUtil {
     public static void checkTablesPrivilege(ServerConnection source, PlanNode node, SQLSelectStatement stmt) {
         for (TableNode tn : node.getReferedTableNodes()) {
             if (!ServerPrivileges.checkPrivilege(source, tn.getSchema(), tn.getTableName(), ServerPrivileges.CheckType.SELECT)) {
-                String msg = "The statement DML privilege check is not passed, sql:" + stmt;
+                String msg = "The statement DML privilege check is not passed, sql:" + stmt.toString().replaceAll("[\\t\\n\\r]", " ");
                 throw new MySQLOutPutException(ErrorCode.ER_PARSE_ERROR, "", msg);
             }
         }

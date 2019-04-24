@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -40,6 +40,11 @@ import java.util.*;
 public class DefaultDruidParser implements DruidParser {
     protected static final Logger LOGGER = LoggerFactory.getLogger(DefaultDruidParser.class);
     protected DruidShardingParseInfo ctx;
+
+
+    public DefaultDruidParser() {
+        ctx = new DruidShardingParseInfo();
+    }
 
     /**
      * @param schema

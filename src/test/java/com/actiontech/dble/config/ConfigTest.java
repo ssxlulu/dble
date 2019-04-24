@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -36,7 +36,7 @@ public class ConfigTest {
         String schemaFile = "/config/schema.xml";
         String ruleFile = "/config/rule.xml";
 
-        XMLSchemaLoader schemaLoader = new XMLSchemaLoader(schemaFile, ruleFile);
+        XMLSchemaLoader schemaLoader = new XMLSchemaLoader(schemaFile, ruleFile, true, null);
         XMLConfigLoader configLoader = new XMLConfigLoader();
 
         this.system = configLoader.getSystemConfig();

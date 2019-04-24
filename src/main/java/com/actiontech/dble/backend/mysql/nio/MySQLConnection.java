@@ -1,5 +1,5 @@
 /*
-* Copyright (C) 2016-2018 ActionTech.
+* Copyright (C) 2016-2019 ActionTech.
 * based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
 * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
 */
@@ -10,6 +10,7 @@ import com.actiontech.dble.backend.mysql.CharsetUtil;
 import com.actiontech.dble.backend.mysql.SecurityUtil;
 import com.actiontech.dble.backend.mysql.nio.handler.ResponseHandler;
 import com.actiontech.dble.backend.mysql.xa.TxState;
+import com.actiontech.dble.btrace.provider.XaDelayProvider;
 import com.actiontech.dble.config.Capabilities;
 import com.actiontech.dble.config.Isolations;
 import com.actiontech.dble.net.BackendAIOConnection;
@@ -56,7 +57,8 @@ public class MySQLConnection extends BackendAIOConnection {
     private volatile boolean complexQuery;
     private volatile NonBlockingSession session;
     private long oldTimestamp;
-
+    private final AtomicBoolean logResponse = new AtomicBoolean(false);
+    private volatile boolean testing = false;
 
     private volatile BackEndCleaner recycler = null;
 
@@ -376,6 +378,7 @@ public class MySQLConnection extends BackendAIOConnection {
             sb.append(setSql);
         }
         if (xaCmd != null) {
+            XaDelayProvider.delayBeforeXaStart(rrn.getName(), xaTxID);
             sb.append(xaCmd);
         }
         if (LOGGER.isDebugEnabled()) {
@@ -475,6 +478,7 @@ public class MySQLConnection extends BackendAIOConnection {
             sb.append(setSql);
         }
         if (xaCmd != null) {
+            XaDelayProvider.delayBeforeXaStart(rrn.getName(), xaTxID);
             sb.append(xaCmd);
         }
         if (LOGGER.isDebugEnabled()) {
@@ -505,9 +509,9 @@ public class MySQLConnection extends BackendAIOConnection {
         this.recycler = recycler;
     }
 
-    public void singal() {
+    public void signal() {
         if (recycler != null) {
-            recycler.singal();
+            recycler.signal();
         }
     }
 
@@ -637,7 +641,7 @@ public class MySQLConnection extends BackendAIOConnection {
                 }
             }
             this.setRunning(false);
-            this.singal();
+            this.signal();
             innerTerminate(reason);
         }
         if (this.respHandler != null) {
@@ -651,10 +655,14 @@ public class MySQLConnection extends BackendAIOConnection {
         DbleServer.getInstance().getComplexQueryExecutor().execute(new Runnable() {
             @Override
             public void run() {
-                conn.setRunning(false);
-                conn.singal();
-                handler.connectionClose(conn, reason);
-                respHandler = null;
+                try {
+                    conn.setRunning(false);
+                    conn.signal();
+                    handler.connectionClose(conn, reason);
+                    respHandler = null;
+                } catch (Throwable e) {
+                    LOGGER.warn("get error close mysqlconnection ", e);
+                }
             }
         });
     }
@@ -712,6 +720,9 @@ public class MySQLConnection extends BackendAIOConnection {
             return;
         }
         if (this.isRunning()) {
+            if (logResponse.compareAndSet(false, true)) {
+                session.setBackendResponseEndTime(this);
+            }
             DbleServer.getInstance().getComplexQueryExecutor().execute(new BackEndRecycleRunnable(this));
             return;
         }
@@ -721,8 +732,10 @@ public class MySQLConnection extends BackendAIOConnection {
         statusSync = null;
         modifiedSQLExecuted = false;
         isDDL = false;
+        testing = false;
         setResponseHandler(null);
         setSession(null);
+        logResponse.set(false);
         pool.releaseChannel(this);
     }
 
@@ -746,6 +759,14 @@ public class MySQLConnection extends BackendAIOConnection {
         if (handler instanceof MySQLConnectionHandler) {
             ((MySQLConnectionHandler) handler).setSession(session);
         }
+    }
+
+    public boolean isTesting() {
+        return testing;
+    }
+
+    public void setTesting(boolean testing) {
+        this.testing = testing;
     }
 
     public void writeQueueAvailable() {
@@ -872,6 +893,10 @@ public class MySQLConnection extends BackendAIOConnection {
 
     }
 
+    public AtomicBoolean getLogResponse() {
+        return logResponse;
+    }
+
     private static class StatusSync {
         private final String schema;
         private final CharsetNames clientCharset;
@@ -930,6 +955,7 @@ public class MySQLConnection extends BackendAIOConnection {
             conn.usrVariables = usrVariables;
         }
     }
+
 
 
 }

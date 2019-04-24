@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -80,7 +80,7 @@ public class ViewMeta {
                 throw new Exception("sql not supported ");
             }
 
-            tmManager.addMetaLock(schema, viewName);
+            tmManager.addMetaLock(schema, viewName, createSql);
 
             //check if the select part has
             this.checkDuplicate(viewParser, isReplace);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -48,7 +48,7 @@ public final class GlobalTableUtil {
     private static final Logger LOGGER = LoggerFactory.getLogger(GlobalTableUtil.class);
     private static Map<String, TableConfig> globalTableMap = new ConcurrentHashMap<>();
     /**
-     * the field of timpstamp,
+     * the field of timestamp,
      * for check GlobalTable consistency
      */
     public static final String GLOBAL_TABLE_CHECK_COLUMN = "_dble_op_time";
@@ -81,9 +81,9 @@ public final class GlobalTableUtil {
         for (int i = 0; i < orgTbMeta.getColumnsList().size(); i++) {
             String column = orgTbMeta.getColumnsList().get(i).getName();
             if (column.equalsIgnoreCase(GLOBAL_TABLE_CHECK_COLUMN)) {
-                if (ToResolveContainer.GLOBAL_TABLE_COLUMN_LOST.contains(tableId) &&
-                        AlertUtil.alertSelfResolve(AlarmCode.GLOBAL_TABLE_COLUMN_LOST, Alert.AlertLevel.WARN, AlertUtil.genSingleLabel("TABLE", tableId))) {
-                    ToResolveContainer.GLOBAL_TABLE_COLUMN_LOST.remove(tableId);
+                if (ToResolveContainer.GLOBAL_TABLE_COLUMN_LOST.contains(tableId)) {
+                    AlertUtil.alertSelfResolve(AlarmCode.GLOBAL_TABLE_COLUMN_LOST, Alert.AlertLevel.WARN, AlertUtil.genSingleLabel("TABLE", tableId),
+                            ToResolveContainer.GLOBAL_TABLE_COLUMN_LOST, tableId);
                 }
                 return true;
             }
@@ -220,9 +220,9 @@ public final class GlobalTableUtil {
                                 AlertUtil.alertSelf(AlarmCode.GLOBAL_TABLE_COLUMN_LOST, Alert.AlertLevel.WARN, warnMsg, AlertUtil.genSingleLabel("TABLE", tableId));
                                 ToResolveContainer.GLOBAL_TABLE_COLUMN_LOST.add(tableId);
                             } else {
-                                if (ToResolveContainer.GLOBAL_TABLE_COLUMN_LOST.contains(tableId) &&
-                                        AlertUtil.alertSelfResolve(AlarmCode.GLOBAL_TABLE_COLUMN_LOST, Alert.AlertLevel.WARN, AlertUtil.genSingleLabel("TABLE", tableId))) {
-                                    ToResolveContainer.GLOBAL_TABLE_COLUMN_LOST.remove(tableId);
+                                if (ToResolveContainer.GLOBAL_TABLE_COLUMN_LOST.contains(tableId)) {
+                                    AlertUtil.alertSelfResolve(AlarmCode.GLOBAL_TABLE_COLUMN_LOST, Alert.AlertLevel.WARN, AlertUtil.genSingleLabel("TABLE", tableId),
+                                            ToResolveContainer.GLOBAL_TABLE_COLUMN_LOST, tableId);
                                 }
                                 LOGGER.debug("columnsList: " + columnsList);
                             }

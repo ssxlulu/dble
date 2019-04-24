@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -29,13 +29,11 @@ public class UnLockTablesHandler extends MultiNodeHandler implements ResponseHan
 
     private static final Logger LOGGER = LoggerFactory.getLogger(UnLockTablesHandler.class);
 
-    private final NonBlockingSession session;
     private final boolean autocommit;
     private final String srcStatement;
 
     public UnLockTablesHandler(NonBlockingSession session, boolean autocommit, String sql) {
         super(session);
-        this.session = session;
         this.autocommit = autocommit;
         this.srcStatement = sql;
     }
@@ -87,6 +85,7 @@ public class UnLockTablesHandler extends MultiNodeHandler implements ResponseHan
             session.releaseConnectionIfSafe(conn, false);
         } else {
             ((MySQLConnection) conn).quit();
+            session.getTargetMap().remove(conn.getAttachment());
         }
         ErrorPacket errPacket = new ErrorPacket();
         errPacket.read(err);

@@ -1,5 +1,5 @@
 /*
-* Copyright (C) 2016-2018 ActionTech.
+* Copyright (C) 2016-2019 ActionTech.
 * based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
 * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
 */
@@ -26,7 +26,7 @@ public class ShardingMultiTableSpace {
     public ShardingMultiTableSpace() throws InterruptedException {
         String schemaFile = "/route/schema.xml";
         String ruleFile = "/route/rule.xml";
-        SchemaLoader schemaLoader = new XMLSchemaLoader(schemaFile, ruleFile);
+        SchemaLoader schemaLoader = new XMLSchemaLoader(schemaFile, ruleFile, true, null);
         schema = schemaLoader.getSchemas().get("cndb");
     }
 

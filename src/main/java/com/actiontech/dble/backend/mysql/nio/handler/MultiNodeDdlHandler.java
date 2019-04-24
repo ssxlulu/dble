@@ -1,5 +1,5 @@
 /*
-* Copyright (C) 2016-2018 ActionTech.
+* Copyright (C) 2016-2019 ActionTech.
 * based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
 * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
 */
@@ -38,7 +38,6 @@ public class MultiNodeDdlHandler extends MultiNodeHandler {
     private static final String STMT = "select 1";
     private final RouteResultset rrs;
     private final RouteResultset oriRrs;
-    private final NonBlockingSession session;
     private final boolean sessionAutocommit;
     private final MultiNodeQueryHandler handler;
     private ErrorPacket err;
@@ -58,7 +57,6 @@ public class MultiNodeDdlHandler extends MultiNodeHandler {
 
         this.rrs = RouteResultCopy.rrCopy(rrs, ServerParse.SELECT, STMT);
         this.sessionAutocommit = session.getSource().isAutocommit();
-        this.session = session;
 
         this.oriRrs = rrs;
         this.handler = new MultiNodeQueryHandler(rrs, session);
@@ -112,6 +110,7 @@ public class MultiNodeDdlHandler extends MultiNodeHandler {
         }
         conn.setResponseHandler(this);
         conn.setSession(session);
+        ((MySQLConnection) conn).setTesting(true);
         ((MySQLConnection) conn).setComplexQuery(true);
         conn.execute(node, session.getSource(), sessionAutocommit && !session.getSource().isTxStart());
     }
@@ -160,7 +159,7 @@ public class MultiNodeDdlHandler extends MultiNodeHandler {
             }
             if (--nodeCount <= 0 && errorResponse.compareAndSet(false, true)) {
                 if (relieaseDDLLock.compareAndSet(false, true)) {
-                    session.handleSpecial(oriRrs, session.getSource().getSchema(), false);
+                    session.handleSpecial(oriRrs, false);
                 }
 
                 handleRollbackPacket(err.toBytes());
@@ -206,7 +205,7 @@ public class MultiNodeDdlHandler extends MultiNodeHandler {
             }
             if (--nodeCount > 0)
                 return;
-            session.handleSpecial(oriRrs, session.getSource().getSchema(), false);
+            session.handleSpecial(oriRrs, false);
             handleRollbackPacket(err.toBytes());
         } finally {
             lock.unlock();
@@ -235,11 +234,12 @@ public class MultiNodeDdlHandler extends MultiNodeHandler {
 
         lock.lock();
         try {
+            ((MySQLConnection) conn).setTesting(false);
             if (--nodeCount > 0)
                 return;
 
             if (this.isFail()) {
-                session.handleSpecial(oriRrs, source.getSchema(), false);
+                session.handleSpecial(oriRrs, false);
                 handleRollbackPacket(err.toBytes());
             } else {
                 try {
@@ -252,7 +252,7 @@ public class MultiNodeDdlHandler extends MultiNodeHandler {
                     handler.execute();
                 } catch (Exception e) {
                     LOGGER.warn(String.valueOf(source) + oriRrs, e);
-                    session.handleSpecial(oriRrs, source.getSchema(), false);
+                    session.handleSpecial(oriRrs, false);
                     source.writeErrMessage(ErrorCode.ERR_HANDLE_DATA, e.toString());
                 }
                 if (session.isPrepared()) {
@@ -309,7 +309,7 @@ public class MultiNodeDdlHandler extends MultiNodeHandler {
             }
             session.clearResources(true);
             if (relieaseDDLLock.compareAndSet(false, true)) {
-                session.handleSpecial(oriRrs, session.getSource().getSchema(), false);
+                session.handleSpecial(oriRrs, false);
             }
             this.clearResources();
             return true;

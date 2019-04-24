@@ -1,5 +1,5 @@
 /*
-* Copyright (C) 2016-2018 ActionTech.
+* Copyright (C) 2016-2019 ActionTech.
 * based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
 * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
 */
@@ -376,7 +376,7 @@ public class PhysicalDBPool {
         // long timeOut = start + 5000 * 1000L;
         boolean hasConnectionInPool = false;
         try {
-            if (ds.getActiveCount() <= 0) {
+            if (ds.getTotalConCount() <= 0) {
                 ds.initMinConnection(null, true, getConHandler, null);
             } else {
                 LOGGER.info("connection with null schema do not create,because testConnection in pool");

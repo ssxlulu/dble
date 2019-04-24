@@ -1,5 +1,5 @@
 /*
-* Copyright (C) 2016-2018 ActionTech.
+* Copyright (C) 2016-2019 ActionTech.
 * based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
 * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
 */
@@ -48,7 +48,7 @@ public class ServerQueryHandler implements FrontendQueryHandler {
             sql = source.getSession2().getRemingSql();
         }
         //Preliminary judgment of multi statement
-        if (source.getSession2().generalNextStatement(sql)) {
+        if (source.isMultStatementAllow() && source.getSession2().generalNextStatement(sql)) {
             sql = sql.substring(0, ParseUtil.findNextBreak(sql));
         }
         source.setExecuteSql(sql);

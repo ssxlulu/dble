@@ -1,6 +1,11 @@
 <?xml version="1.0"?>
+<!--
+  ~ Copyright (C) 2016-2019 ActionTech.
+  ~ License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
+  -->
+
 <!DOCTYPE dble:schema SYSTEM "schema.dtd">
-<dble:schema xmlns:dble="http://dble.cloud/">
+<dble:schema xmlns:dble="http://dble.cloud/" version="2.19.03.0">
 
     <schema name="TESTDB">
         <!-- auto sharding by id (long) -->

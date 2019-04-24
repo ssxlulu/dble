@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -53,6 +53,16 @@ public final class SchemaUtil {
         }
         return null;
     }
+
+    public static SchemaInfo getSchemaInfoWithoutCheck(String schema, String tableName) {
+        SchemaInfo schemaInfo = new SchemaInfo();
+        SchemaConfig config = DbleServer.getInstance().getConfig().getSchemas().get(schema);
+        schemaInfo.schemaConfig = config;
+        schemaInfo.table = tableName;
+        schemaInfo.schema = schema;
+        return schemaInfo;
+    }
+
 
     public static SchemaInfo getSchemaInfo(String user, SchemaConfig schemaConfig, String fullTableName) throws SQLException {
         SchemaInfo schemaInfo = new SchemaInfo();
@@ -200,7 +210,7 @@ public final class SchemaUtil {
         }
 
         if (!ServerPrivileges.checkPrivilege(source, schemaInfo.schema, schemaInfo.table, checkType)) {
-            String msg = "The statement DML privilege check is not passed, sql:" + stmt;
+            String msg = "The statement DML privilege check is not passed, sql:" + stmt.toString().replaceAll("[\\t\\n\\r]", " ");
             throw new SQLNonTransientException(msg);
         }
         String noShardingNode = RouterUtil.isNoSharding(schemaInfo.schemaConfig, schemaInfo.table);

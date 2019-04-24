@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -221,9 +221,10 @@ public class ItemField extends ItemIdent {
         Item column = null;
         if (context.isFindInSelect()) {
             // try to find in selectlist
-            if (StringUtils.isEmpty(getTableName())) {
+            if (StringUtils.isEmpty(getDbName()) || StringUtils.isEmpty(getTableName())) {
                 for (NamedField namedField : planNode.getOuterFields().keySet()) {
-                    if (StringUtils.equalsIgnoreCase(tmpFieldName, namedField.getName())) {
+                    if (StringUtils.equalsIgnoreCase(tmpFieldName, namedField.getName()) &&
+                            (StringUtils.isEmpty(getTableName()) || (StringUtils.isEmpty(getDbName()) && StringUtils.equals(getTableName(), namedField.getTable())))) {
                         if (column == null) {
                             column = planNode.getOuterFields().get(namedField);
                         } else
@@ -237,16 +238,21 @@ public class ItemField extends ItemIdent {
         if (column != null && context.isSelectFirst()) {
             return column;
         }
+        return findItemFormInnerField(tmpFieldName, planNode, column);
+    }
 
+    private Item findItemFormInnerField(String tmpFieldName, PlanNode planNode, Item column) {
         // find from inner fields
         Item columnFromMeta = null;
-        if (StringUtils.isEmpty(getTableName())) {
+        if (StringUtils.isEmpty(getDbName()) || StringUtils.isEmpty(getTableName())) {
             for (NamedField namedField : planNode.getInnerFields().keySet()) {
-                if (StringUtils.equalsIgnoreCase(tmpFieldName, namedField.getName())) {
+                if (StringUtils.equalsIgnoreCase(tmpFieldName, namedField.getName()) &&
+                        (StringUtils.isEmpty(getTableName()) || (StringUtils.isEmpty(getDbName()) && StringUtils.equals(getTableName(), namedField.getTable())))) {
                     if (columnFromMeta == null) {
-                        NamedField coutField = planNode.getInnerFields().get(new NamedField(namedField.getSchema(), namedField.getTable(), tmpFieldName, null));
+                        this.dbName = namedField.getSchema();
                         this.tableName = namedField.getTable();
                         getReferTables().clear();
+                        NamedField coutField = planNode.getInnerFields().get(new NamedField(namedField.getSchema(), namedField.getTable(), tmpFieldName, null));
                         this.getReferTables().add(coutField.planNode);
                         columnFromMeta = this;
                     } else {
@@ -266,6 +272,7 @@ public class ItemField extends ItemIdent {
                 NamedField coutField = planNode.getInnerFields().get(tmpField);
                 getReferTables().clear();
                 getReferTables().add(coutField.planNode);
+                this.dbName = tmpField.getSchema();
                 this.tableName = tmpField.getTable();
                 columnFromMeta = this;
             }

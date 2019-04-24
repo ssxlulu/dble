@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -90,25 +90,26 @@ public class DruidSelectParser extends DefaultDruidParser {
                     throw new SQLNonTransientException(msg);
                 }
                 if (!ServerPrivileges.checkPrivilege(sc, schemaInfo.getSchema(), schemaInfo.getTable(), CheckType.SELECT)) {
-                    String msg = "The statement DML privilege check is not passed, sql:" + stmt;
+                    String msg = "The statement DML privilege check is not passed, sql:" + stmt.toString().replaceAll("[\\t\\n\\r]", " ");
                     throw new SQLNonTransientException(msg);
                 }
-                rrs.setSchema(schemaInfo.getSchema());
-                rrs.setTable(schemaInfo.getTable());
-                rrs.setTableAlias(schemaInfo.getTableAlias());
-                rrs.setStatement(RouterUtil.removeSchema(rrs.getStatement(), schemaInfo.getSchema()));
-                schema = schemaInfo.getSchemaConfig();
 
-                if (DbleServer.getInstance().getTmManager().getSyncView(schema.getName(), schemaInfo.getTable()) != null) {
+                if (DbleServer.getInstance().getTmManager().getSyncView(schemaInfo.getSchemaConfig().getName(), schemaInfo.getTable()) != null) {
                     rrs.setNeedOptimizer(true);
                     rrs.setSqlStatement(selectStmt);
-                    return schema;
+                    return schemaInfo.getSchemaConfig();
                 }
 
                 super.visitorParse(schema, rrs, stmt, visitor, sc);
                 if (visitor.getSubQueryList().size() > 0) {
                     return executeComplexSQL(schemaName, schema, rrs, selectStmt, sc, visitor.getSelectTableList().size());
                 }
+
+                rrs.setSchema(schemaInfo.getSchema());
+                rrs.setTable(schemaInfo.getTable());
+                rrs.setTableAlias(schemaInfo.getTableAlias());
+                rrs.setStatement(RouterUtil.removeSchema(rrs.getStatement(), schemaInfo.getSchema()));
+                schema = schemaInfo.getSchemaConfig();
 
                 String noShardingNode = RouterUtil.isNoSharding(schema, schemaInfo.getTable());
                 if (noShardingNode != null) {
@@ -121,6 +122,7 @@ public class DruidSelectParser extends DefaultDruidParser {
                     String msg = "Table '" + schema.getName() + "." + schemaInfo.getTable() + "' doesn't exist";
                     throw new SQLException(msg, "42S02", ErrorCode.ER_NO_SUCH_TABLE);
                 }
+                rrs.setPrimaryKey(tc.getPrimaryKey());
                 // select ...for update /in shard mode /in transaction
                 if ((mysqlSelectQuery.isForUpdate() || mysqlSelectQuery.isLockInShareMode()) && !sc.isAutocommit()) {
                     rrs.setCanRunInReadDB(false);
@@ -144,7 +146,7 @@ public class DruidSelectParser extends DefaultDruidParser {
 
     private SchemaConfig tryRouteToOneNode(SchemaConfig schema, RouteResultset rrs, ServerConnection sc, SQLSelectStatement selectStmt, int tableSize) throws SQLException {
         Set<String> schemaList = new HashSet<>();
-        String dataNode = RouterUtil.tryRouteTablesToOneNode(sc.getUser(), rrs.getStatement(), schema, ctx, schemaList, tableSize);
+        String dataNode = RouterUtil.tryRouteTablesToOneNode(sc.getUser(), rrs, schema, ctx, schemaList, tableSize, true);
         if (dataNode != null) {
             String sql = rrs.getStatement();
             for (String toRemoveSchemaName : schemaList) {
@@ -158,10 +160,11 @@ public class DruidSelectParser extends DefaultDruidParser {
         }
         return schema;
     }
+
     private boolean canRouteTablesToOneNode(SchemaConfig schema, SQLStatement stmt, RouteResultset rrs,
-                                         MySqlSelectQueryBlock mysqlSelectQuery, ServerConnection sc, int tableSize) throws SQLException {
+                                            MySqlSelectQueryBlock mysqlSelectQuery, ServerConnection sc, int tableSize) throws SQLException {
         Set<String> schemaList = new HashSet<>();
-        String dataNode = RouterUtil.tryRouteTablesToOneNode(sc.getUser(), rrs.getStatement(), schema, ctx, schemaList, tableSize);
+        String dataNode = RouterUtil.tryRouteTablesToOneNode(sc.getUser(), rrs, schema, ctx, schemaList, tableSize, true);
         if (dataNode != null) {
             String sql = rrs.getStatement();
             assert schemaList.size() <= 1;
@@ -347,7 +350,7 @@ public class DruidSelectParser extends DefaultDruidParser {
     }
 
     private void parseAggGroupCommon(SchemaConfig schema, SQLStatement stmt, RouteResultset rrs,
-                                                    MySqlSelectQueryBlock mysqlSelectQuery, TableConfig tc) throws SQLException {
+                                     MySqlSelectQueryBlock mysqlSelectQuery, TableConfig tc) throws SQLException {
         Map<String, String> aliaColumns = new HashMap<>();
         boolean isDistinct = (mysqlSelectQuery.getDistionOption() == SQLSetQuantifier.DISTINCT) || (mysqlSelectQuery.getDistionOption() == SQLSetQuantifier.DISTINCTROW);
         parseAggExprCommon(schema, rrs, mysqlSelectQuery, aliaColumns, tc, isDistinct);
@@ -650,7 +653,7 @@ public class DruidSelectParser extends DefaultDruidParser {
         } else if (mysqlSelectQuery.getLimit() != null) { // has already limit
             return false;
         } else if (ctx.getTables().size() == 1) {
-            if (rrs.hasPrimaryKeyToCache()) {
+            if (rrs.isContainsPrimaryFilter()) {
                 // single table and has primary key , need not limit because of only one row
                 return false;
             }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -41,6 +41,7 @@ public final class XAStateLog {
         }
     }
 
+    public static final String XA_ALERT_FLAG = "XA_ALERT_FLAG";
     private static final Repository IN_MEMORY_REPOSITORY = new InMemoryRepository();
     private static ReentrantLock lock = new ReentrantLock();
     private static AtomicBoolean hasLeader = new AtomicBoolean(false);

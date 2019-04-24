@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -535,20 +535,16 @@ public class MySQLItemVisitor extends MySqlASTVisitorAdapter {
         Map<String, Object> attributes = x.getAttributes();
         switch (funcName) {
             case "TRIM":
-                if (attributes == null) {
+                SQLExpr from = x.getFrom();
+                if (from == null) {
                     item = new ItemFuncTrim(args.get(0), TrimTypeEnum.DEFAULT);
                 } else {
                     TrimTypeEnum trimType = TrimTypeEnum.DEFAULT;
-                    String type = (String) attributes.get(ItemFuncKeyWord.TRIM_TYPE);
-                    if (type != null) {
-                        trimType = TrimTypeEnum.valueOf(type);
+                    String trimOption = x.getTrimOption();
+                    if (trimOption != null) {
+                        trimType = TrimTypeEnum.valueOf(trimOption);
                     }
-                    if (attributes.get(ItemFuncKeyWord.FROM) == null) {
-                        item = new ItemFuncTrim(args.get(0), trimType);
-                    } else {
-                        SQLCharExpr from = (SQLCharExpr) attributes.get(ItemFuncKeyWord.FROM);
-                        item = new ItemFuncTrim(args.get(0), getItem(from), trimType);
-                    }
+                    item = new ItemFuncTrim(args.get(0), getItem(from), trimType);
                 }
                 break;
             case "CONVERT":
@@ -571,10 +567,11 @@ public class MySQLItemVisitor extends MySqlASTVisitorAdapter {
                         item = ItemCreate.getInstance().createFuncConvert(args.get(0), castType);
                     }
                 } else {
-                    if (attributes == null || attributes.get(ItemFuncKeyWord.USING) == null) {
-                        throw new MySQLOutPutException(ErrorCode.ER_OPTIMIZER, "", "CONVERT(... USING ...) is standard SQL syntax");
+                    SQLExpr using = x.getUsing();
+                    if (using == null || !(using instanceof SQLIdentifierExpr)) {
+                        throw new MySQLOutPutException(ErrorCode.ER_OPTIMIZER, "", "CONVERT(... USING ...) is standard SQL syntax,You should set correct charset");
                     }
-                    item = new ItemFuncConvCharset(args.get(0), (String) attributes.get(ItemFuncKeyWord.USING));
+                    item = new ItemFuncConvCharset(args.get(0), ((SQLIdentifierExpr) using).getSimpleName());
                 }
                 break;
             case "CHAR":

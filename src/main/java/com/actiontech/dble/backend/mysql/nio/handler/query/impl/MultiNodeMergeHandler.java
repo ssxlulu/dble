@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
 
@@ -148,6 +148,7 @@ public class MultiNodeMergeHandler extends OwnThreadDMLHandler {
         if (LOGGER.isDebugEnabled()) {
             LOGGER.debug(conn.toString() + " 's rowEof is reached.");
         }
+
         if (this.terminate.get())
             return;
         if (isEasyMerge) {
@@ -267,8 +268,10 @@ public class MultiNodeMergeHandler extends OwnThreadDMLHandler {
             }
         }
     }
+
     /**
      * terminatePreHandler
+     *
      * @param handler handler
      */
     private void terminatePreHandler(DMLResponseHandler handler) {

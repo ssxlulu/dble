@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 ActionTech.
+ * Copyright (C) 2016-2019 ActionTech.
  * based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
  * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
  */
@@ -16,9 +16,9 @@ import com.actiontech.dble.backend.mysql.xa.recovery.impl.KVStoreRepository;
 import com.actiontech.dble.buffer.BufferPool;
 import com.actiontech.dble.buffer.DirectByteBufferPool;
 import com.actiontech.dble.cache.CacheService;
+import com.actiontech.dble.cluster.ClusterGeneralConfig;
 import com.actiontech.dble.cluster.ClusterParamCfg;
 import com.actiontech.dble.config.ServerConfig;
-import com.actiontech.dble.config.loader.ucoreprocess.UcoreConfig;
 import com.actiontech.dble.config.loader.zkprocess.comm.ZkConfig;
 import com.actiontech.dble.config.model.SchemaConfig;
 import com.actiontech.dble.config.model.SystemConfig;
@@ -36,6 +36,7 @@ import com.actiontech.dble.net.mysql.WriteToBackendTask;
 import com.actiontech.dble.route.RouteService;
 import com.actiontech.dble.route.sequence.handler.*;
 import com.actiontech.dble.server.ServerConnectionFactory;
+import com.actiontech.dble.server.status.AlertManager;
 import com.actiontech.dble.server.status.OnlineLockStatus;
 import com.actiontech.dble.server.status.SlowQueryLog;
 import com.actiontech.dble.server.util.GlobalTableUtil;
@@ -47,10 +48,7 @@ import com.actiontech.dble.statistic.stat.SqlResultSizeRecorder;
 import com.actiontech.dble.statistic.stat.ThreadWorkUsage;
 import com.actiontech.dble.statistic.stat.UserStat;
 import com.actiontech.dble.statistic.stat.UserStatAnalyzer;
-import com.actiontech.dble.util.ExecutorUtil;
-import com.actiontech.dble.util.KVPathUtil;
-import com.actiontech.dble.util.TimeUtil;
-import com.actiontech.dble.util.ZKUtils;
+import com.actiontech.dble.util.*;
 import com.google.common.io.Files;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.curator.framework.CuratorFramework;
@@ -78,6 +76,7 @@ public final class DbleServer {
     private static final long DEFAULT_OLD_CONNECTION_CLEAR_PERIOD = 5 * 1000L;
 
     private static final DbleServer INSTANCE = new DbleServer();
+
     private static final Logger LOGGER = LoggerFactory.getLogger("Server");
     private AtomicBoolean backupLocked;
 
@@ -174,8 +173,8 @@ public final class DbleServer {
         id.append("'" + NAME + "Server.");
         if (isUseZK()) {
             id.append(ZkConfig.getInstance().getValue(ClusterParamCfg.CLUSTER_CFG_MYID));
-        } else if (isUseUcore()) {
-            id.append(UcoreConfig.getInstance().getValue(ClusterParamCfg.CLUSTER_CFG_MYID));
+        } else if (isUseGeneralCluster()) {
+            id.append(ClusterGeneralConfig.getInstance().getValue(ClusterParamCfg.CLUSTER_CFG_MYID));
         } else {
             id.append(this.getConfig().getSystem().getServerNodeId());
 
@@ -326,8 +325,8 @@ public final class DbleServer {
         short bufferPoolPageNumber = system.getBufferPoolPageNumber();
         //minimum allocation unit
         short bufferPoolChunkSize = system.getBufferPoolChunkSize();
-        if (bufferPoolPageSize * bufferPoolPageNumber > Platform.getMaxDirectMemory()) {
-            throw new IOException("Direct BufferPool size lager than MaxDirectMemory");
+        if ((long) bufferPoolPageSize * (long) bufferPoolPageNumber > Platform.getMaxDirectMemory()) {
+            throw new IOException("Direct BufferPool size[bufferPoolPageSize(" + bufferPoolPageSize + ")*bufferPoolPageNumber(" + bufferPoolPageNumber + ")] larger than MaxDirectMemory[" + Platform.getMaxDirectMemory() + "]");
         }
         bufferPool = new DirectByteBufferPool(bufferPoolPageSize, bufferPoolChunkSize, bufferPoolPageNumber);
 
@@ -369,6 +368,7 @@ public final class DbleServer {
         if (system.getEnableAlert() == 1) {
             AlertUtil.switchAlert(true);
         }
+        AlertManager.getInstance().startAlert();
         if (aio) {
             int processorCount = frontProcessorCount + backendProcessorCount;
             LOGGER.info("using aio network handler ");
@@ -429,11 +429,11 @@ public final class DbleServer {
 
         userManager.initForLatest(config.getUsers(), system.getMaxCon());
 
-        if (isUseUcore()) {
+        if (isUseGeneralCluster()) {
             try {
                 OnlineLockStatus.getInstance().metaUcoreInit(true);
             } catch (Exception e) {
-                LOGGER.info("ucore can not connection ");
+                LOGGER.warn("ucore can not connection ");
             }
         }
         //initialized the cache service
@@ -504,10 +504,16 @@ public final class DbleServer {
             if (dnIndexLock.acquire(30, TimeUnit.SECONDS)) {
                 try {
                     File file = new File(SystemConfig.getHomePath(), "conf" + File.separator + "dnindex.properties");
+                    byte[] data;
+                    if (!file.exists()) {
+                        data = "".getBytes();
+                    } else {
+                        data = Files.toByteArray(file);
+                    }
                     String path = KVPathUtil.getDnIndexNode();
                     CuratorFramework zk = ZKUtils.getConnection();
                     if (zk.checkExists().forPath(path) == null) {
-                        zk.create().creatingParentsIfNeeded().forPath(path, Files.toByteArray(file));
+                        zk.create().creatingParentsIfNeeded().forPath(path, data);
                     }
                 } finally {
                     dnIndexLock.release();
@@ -522,14 +528,19 @@ public final class DbleServer {
         systemVariables = sys;
     }
 
-    public void reloadMetaData(ServerConfig conf) {
+    public void reloadMetaData(ServerConfig conf, Map<String, Set<String>> specifiedSchemas) {
         this.metaChanging = true;
         try {
-            ProxyMetaManager tmpManager = tmManager;
-            ProxyMetaManager newManager = new ProxyMetaManager();
-            newManager.initMeta(conf);
-            tmManager = newManager;
-            tmpManager.terminate();
+            if (CollectionUtil.isEmpty(specifiedSchemas)) {
+                ProxyMetaManager tmpManager = tmManager;
+                ProxyMetaManager newManager = new ProxyMetaManager();
+                newManager.initMeta(conf, null);
+                tmManager = newManager;
+                tmpManager.terminate();
+            } else {
+                tmManager.initMeta(conf, specifiedSchemas);
+                tmManager.setTimestamp(System.currentTimeMillis());
+            }
         } finally {
             this.metaChanging = false;
         }
@@ -686,11 +697,12 @@ public final class DbleServer {
     }
 
     public boolean isUseZK() {
-        return ZkConfig.getInstance().getValue(ClusterParamCfg.CLUSTER_CFG_MYID) != null;
+        return ClusterGeneralConfig.getInstance().isUseCluster() && ZkConfig.getInstance().getValue(ClusterParamCfg.CLUSTER_CFG_MYID) != null;
     }
 
-    public boolean isUseUcore() {
-        return UcoreConfig.getInstance().getValue(ClusterParamCfg.CLUSTER_CFG_MYID) != null;
+    public boolean isUseGeneralCluster() {
+        return ClusterGeneralConfig.getInstance().isUseCluster() &&
+                ZkConfig.getInstance().getValue(ClusterParamCfg.CLUSTER_CFG_MYID) == null;
     }
 
     public TxnLogProcessor getTxnLogProcessor() {
@@ -1006,7 +1018,8 @@ public final class DbleServer {
                     participantLogEntry.getTxState() != TxState.TX_PREPARE_UNCONNECT_STATE &&
                     participantLogEntry.getTxState() != TxState.TX_ROLLBACKING_STATE &&
                     participantLogEntry.getTxState() != TxState.TX_ROLLBACK_FAILED_STATE &&
-                    participantLogEntry.getTxState() != TxState.TX_PREPARED_STATE) {
+                    participantLogEntry.getTxState() != TxState.TX_PREPARED_STATE &&
+                    participantLogEntry.getTxState() != TxState.TX_PREPARING_STATE) {
                 continue;
             }
             finished = false;
@@ -1072,5 +1085,6 @@ public final class DbleServer {
     public FrontendUserManager getUserManager() {
         return userManager;
     }
+
 
 }

@@ -1,5 +1,5 @@
 /*
-* Copyright (C) 2016-2018 ActionTech.
+* Copyright (C) 2016-2019 ActionTech.
 * based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
 * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
 */
@@ -50,6 +50,9 @@ public class AuthPacket extends MySQLPacket {
     private String database;
     private String authPlugin;
 
+
+    private boolean multStatementAllow = false;
+
     public void read(byte[] data) {
         MySQLMessage mm = new MySQLMessage(data);
         packetLength = mm.readUB3();
@@ -73,6 +76,10 @@ public class AuthPacket extends MySQLPacket {
             if (database != null && DbleServer.getInstance().getSystemVariables().isLowerCaseTableNames()) {
                 database = database.toLowerCase();
             }
+        }
+
+        if ((clientFlags & Capabilities.CLIENT_MULTIPLE_STATEMENTS) != 0) {
+            multStatementAllow = true;
         }
 
         if ((clientFlags & CLIENT_PLUGIN_AUTH) != 0) {
@@ -216,5 +223,9 @@ public class AuthPacket extends MySQLPacket {
 
     public String getAuthPlugin() {
         return authPlugin;
+    }
+
+    public boolean isMultStatementAllow() {
+        return multStatementAllow;
     }
 }
