@@ -18,15 +18,10 @@ public final class IncrSequenceTimeHandler implements SequenceHandler {
     protected static final Logger LOGGER = LoggerFactory.getLogger(IncrSequenceTimeHandler.class);
 
     private static final String SEQUENCE_TIME_PROPS = "sequence_time_conf.properties";
-    private static final IncrSequenceTimeHandler INSTANCE = new IncrSequenceTimeHandler();
     private static final long DEFAULT_START_TIMESTAMP = 1288834974657L; //Thu Nov 04 09:42:54 CST 2010
     private IdWorker workey;
 
-
-    public static IncrSequenceTimeHandler getInstance() {
-        return IncrSequenceTimeHandler.INSTANCE;
-    }
-    public void load() {
+    public void load(boolean isLowerCaseTableNames) {
         // load sequnce properties
         Properties props = PropertiesUtil.loadProps(SEQUENCE_TIME_PROPS);
 
@@ -38,12 +33,11 @@ public final class IncrSequenceTimeHandler implements SequenceHandler {
             if (!StringUtil.isEmpty(startTimeStr)) {
                 startTimeMilliseconds = DateUtil.parseDate(startTimeStr).getTime();
                 if (startTimeMilliseconds > System.currentTimeMillis()) {
-                    LOGGER.warn("Global sequence START_TIME mustn't be over than dble start time, starting from 2010-10-04 09:42:54");
-                    startTimeMilliseconds = DEFAULT_START_TIMESTAMP;
+                    LOGGER.warn("START_TIME in " + SEQUENCE_TIME_PROPS + " mustn't be over than dble start time, starting from 2010-11-04 09:42:54");
                 }
             }
         } catch (Exception pe) {
-            LOGGER.warn("Global sequence START_TIME parse exception, starting from 2010-10-04 09:42:54");
+            LOGGER.warn("START_TIME in " + SEQUENCE_TIME_PROPS + " parse exception, starting from 2010-11-04 09:42:54");
         }
         workey = new IdWorker(workid, dataCenterId, startTimeMilliseconds);
     }
@@ -56,9 +50,9 @@ public final class IncrSequenceTimeHandler implements SequenceHandler {
 
     /**
      * @author sw
-     * <p>
-     * Now:
-     * 64 bit ID 30 (millisecond high 30 )+5(DATA_CENTER_ID)+5(WORKER_ID)+12(autoincrement)+12 (millisecond low 12)
+     *         <p>
+     *         Now:
+     *         64 bit ID 30 (millisecond high 30 )+5(DATA_CENTER_ID)+5(WORKER_ID)+12(autoincrement)+12 (millisecond low 12)
      */
     static class IdWorker {
         private static final long TIMESTAMP_LOW_BITS = 12L;
@@ -107,7 +101,7 @@ public final class IncrSequenceTimeHandler implements SequenceHandler {
             long timestamp = timeGen();
             if (timestamp < lastTimestamp) {
                 throw new SQLNonTransientException("Clock moved backwards.  Refusing to generate id for " +
-                            (lastTimestamp - timestamp) + " milliseconds");
+                        (lastTimestamp - timestamp) + " milliseconds");
             }
 
             if (lastTimestamp == timestamp) {

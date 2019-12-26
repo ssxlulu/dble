@@ -5,11 +5,11 @@
 
 package com.actiontech.dble.route.parser.druid.impl;
 
-import com.actiontech.dble.DbleServer;
 import com.actiontech.dble.config.ServerPrivileges;
 import com.actiontech.dble.config.model.ERTable;
 import com.actiontech.dble.config.model.SchemaConfig;
 import com.actiontech.dble.config.model.TableConfig;
+import com.actiontech.dble.singleton.ProxyMeta;
 import com.actiontech.dble.meta.protocol.StructureMeta;
 import com.actiontech.dble.plan.common.ptr.StringPtr;
 import com.actiontech.dble.route.RouteResultset;
@@ -36,7 +36,8 @@ import java.util.*;
  * @author huqing.yan
  */
 public class DruidUpdateParser extends DefaultDruidParser {
-    public SchemaConfig visitorParse(SchemaConfig schema, RouteResultset rrs, SQLStatement stmt, ServerSchemaStatVisitor visitor, ServerConnection sc)
+    @Override
+    public SchemaConfig visitorParse(SchemaConfig schema, RouteResultset rrs, SQLStatement stmt, ServerSchemaStatVisitor visitor, ServerConnection sc, boolean isExplain)
             throws SQLException {
         MySqlUpdateStatement update = (MySqlUpdateStatement) stmt;
         SQLTableSource tableSource = update.getTableSource();
@@ -58,7 +59,7 @@ public class DruidUpdateParser extends DefaultDruidParser {
             }
             schema = schemaInfo.getSchemaConfig();
             rrs.setStatement(RouterUtil.removeSchema(rrs.getStatement(), schemaInfo.getSchema()));
-            super.visitorParse(schema, rrs, stmt, visitor, sc);
+            super.visitorParse(schema, rrs, stmt, visitor, sc, isExplain);
             if (visitor.getSubQueryList().size() > 0) {
                 StringPtr noShardingNode = new StringPtr(null);
                 Set<String> schemas = new HashSet<>();
@@ -100,6 +101,11 @@ public class DruidUpdateParser extends DefaultDruidParser {
             if (schema.getTables().get(tableName).isGlobalTable() && ctx.getRouteCalculateUnit().getTablesAndConditions().size() > 1) {
                 throw new SQLNonTransientException("global table is not supported in multi table related update " + tableName);
             }
+
+            if (update.getLimit() != null) {
+                this.updateAndDeleteLimitRoute(rrs, tableName, schema);
+            }
+
             if (ctx.getTables().size() == 0) {
                 ctx.addTable(schemaInfo.getTable());
             }
@@ -109,7 +115,7 @@ public class DruidUpdateParser extends DefaultDruidParser {
 
     private String convertUpdateSQL(SchemaInfo schemaInfo, MySqlUpdateStatement update, String originSQL) throws SQLNonTransientException {
         long opTimestamp = new Date().getTime();
-        StructureMeta.TableMeta orgTbMeta = DbleServer.getInstance().getTmManager().getSyncTableMeta(schemaInfo.getSchema(),
+        StructureMeta.TableMeta orgTbMeta = ProxyMeta.getInstance().getTmManager().getSyncTableMeta(schemaInfo.getSchema(),
                 schemaInfo.getTable());
         if (orgTbMeta == null)
             return originSQL;

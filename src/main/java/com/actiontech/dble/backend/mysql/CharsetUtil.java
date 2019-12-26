@@ -354,7 +354,7 @@ public final class CharsetUtil {
     public static String getJavaCharset(String charset) {
         if (charset == null || charset.length() == 0)
             return StandardCharsets.UTF_8.toString();
-        String javaCharset = CHARSET_TO_JAVA.get(charset);
+        String javaCharset = CHARSET_TO_JAVA.get(charset.toLowerCase());
         if (javaCharset == null)
             return StandardCharsets.UTF_8.toString();
         return javaCharset;
@@ -368,5 +368,10 @@ public final class CharsetUtil {
 
     public static CollationInfo[] getAllCollationInfo() {
         return INDEX_TO_COLLATION;
+    }
+
+    public static boolean isCaseInsensitive(String collation) {
+        CollationInfo info = COLLATION_TO_INDEX.get(collation.toLowerCase());
+        return (info != null) && info.getCollation().endsWith("_ci");
     }
 }

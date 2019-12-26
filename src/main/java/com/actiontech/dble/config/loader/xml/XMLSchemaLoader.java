@@ -5,7 +5,7 @@
 */
 package com.actiontech.dble.config.loader.xml;
 
-import com.actiontech.dble.backend.datasource.PhysicalDBPool;
+import com.actiontech.dble.backend.datasource.AbstractPhysicalDBPool;
 import com.actiontech.dble.config.ProblemReporter;
 import com.actiontech.dble.config.Versions;
 import com.actiontech.dble.config.loader.SchemaLoader;
@@ -18,8 +18,6 @@ import com.actiontech.dble.route.function.AbstractPartitionAlgorithm;
 import com.actiontech.dble.util.DecryptUtil;
 import com.actiontech.dble.util.ResourceUtil;
 import com.actiontech.dble.util.SplitUtil;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
@@ -36,7 +34,6 @@ import java.util.Map.Entry;
 public class XMLSchemaLoader implements SchemaLoader {
     private static final String DEFAULT_DTD = "/schema.dtd";
     private static final String DEFAULT_XML = "/schema.xml";
-    private static final Logger LOGGER = LoggerFactory.getLogger(XMLSchemaLoader.class);
 
     private final Map<String, TableRuleConfig> tableRules;
     private final Map<String, DataHostConfig> dataHosts;
@@ -91,14 +88,19 @@ public class XMLSchemaLoader implements SchemaLoader {
             dtd = ResourceUtil.getResourceAsStream(dtdFile);
             xml = ResourceUtil.getResourceAsStream(xmlFile);
             Element root = ConfigUtil.getDocument(dtd, xml).getDocumentElement();
-            String version = "2.18.12.0 or earlier";
+            String version = null;
             if (root.getAttributes().getNamedItem("version") != null) {
                 version = root.getAttributes().getNamedItem("version").getNodeValue();
             }
-            if (!version.equals(Versions.CONFIG_VERSION)) {
-                String message = "The server-version is " + Versions.CONFIG_VERSION + ",but the schema.xml version is " + version + ".There may be some incompatible config between two versions,please check it";
+            if (version != null && !Versions.CONFIG_VERSION.equals(version)) {
                 if (this.problemReporter != null) {
-                    this.problemReporter.warn(message);
+                    if (Versions.checkVersion(version)) {
+                        String message = "The dble-config-version is " + Versions.CONFIG_VERSION + ",but the schema.xml version is " + version + ".There may be some incompatible config between two versions, please check it";
+                        this.problemReporter.notice(message);
+                    } else {
+                        String message = "The dble-config-version is " + Versions.CONFIG_VERSION + ",but the schema.xml version is " + version + ".There must be some incompatible config between two versions, please check it";
+                        this.problemReporter.notice(message);
+                    }
                 }
             }
             loadDataHosts(root);
@@ -281,17 +283,17 @@ public class XMLSchemaLoader implements SchemaLoader {
             if (tableNames == null) {
                 throw new ConfigException("table name is not found!");
             }
-            //primaryKey used for cache and autoincrement
-            String primaryKey = tableElement.hasAttribute("primaryKey") ? tableElement.getAttribute("primaryKey").toUpperCase() : null;
+            //cacheKey used for cache and autoincrement
+            String cacheKey = tableElement.hasAttribute("cacheKey") ? tableElement.getAttribute("cacheKey").toUpperCase() : null;
             //if autoIncrement,it will use sequence handler
             String incrementColumn = tableElement.hasAttribute("incrementColumn") ? tableElement.getAttribute("incrementColumn").toUpperCase() : null;
-            boolean autoIncrement = isAutoIncrement(tableElement, primaryKey, incrementColumn);
+            boolean autoIncrement = isAutoIncrement(tableElement, incrementColumn);
 
             if (incrementColumn != null && !autoIncrement) {
                 throw new ConfigException("table " + tableNameElement + " has incrementColumn but not autoIncrement");
             }
             for (String tableName : tableNames) {
-                TableConfig table = new TableConfig(tableName, primaryKey, autoIncrement, needAddLimit, tableType,
+                TableConfig table = new TableConfig(tableName, cacheKey, autoIncrement, needAddLimit, tableType,
                         dataNode, (tableRule != null) ? tableRule.getRule() : null, ruleRequired, incrementColumn);
                 checkDataNodeExists(table.getDataNodes());
                 if (table.getRule() != null) {
@@ -319,11 +321,11 @@ public class XMLSchemaLoader implements SchemaLoader {
         return tables;
     }
 
-    private boolean isAutoIncrement(Element tableElement, String primaryKey, String incrementColumn) {
+    private boolean isAutoIncrement(Element tableElement, String incrementColumn) {
         String autoIncrementStr = ConfigUtil.checkAndGetAttribute(tableElement, "autoIncrement", "false", problemReporter);
         boolean autoIncrement = Boolean.parseBoolean(autoIncrementStr);
-        if (autoIncrement && primaryKey == null && incrementColumn == null) {
-            throw new ConfigException("autoIncrement is true but primaryKey and incrementColumn is not setting!");
+        if (autoIncrement && incrementColumn == null) {
+            throw new ConfigException("autoIncrement is true but cacheKey and incrementColumn is not setting!");
         }
         return autoIncrement;
     }
@@ -384,13 +386,13 @@ public class XMLSchemaLoader implements SchemaLoader {
             //join key ,the parent's column
             String joinKey = childTbElement.getAttribute("joinKey").toUpperCase();
             String parentKey = childTbElement.getAttribute("parentKey").toUpperCase();
-            String primaryKey = childTbElement.hasAttribute("primaryKey") ? childTbElement.getAttribute("primaryKey").toUpperCase() : null;
+            String cacheKey = childTbElement.hasAttribute("cacheKey") ? childTbElement.getAttribute("cacheKey").toUpperCase() : null;
             String incrementColumn = childTbElement.hasAttribute("incrementColumn") ? childTbElement.getAttribute("incrementColumn").toUpperCase() : null;
-            boolean autoIncrement = isAutoIncrement(childTbElement, primaryKey, incrementColumn);
+            boolean autoIncrement = isAutoIncrement(childTbElement, incrementColumn);
             if (incrementColumn != null && !autoIncrement) {
                 throw new ConfigException("table " + cdTbName + " has incrementColumn but not AutoIncrement");
             }
-            TableConfig table = new TableConfig(cdTbName, primaryKey, autoIncrement, needAddLimit,
+            TableConfig table = new TableConfig(cdTbName, cacheKey, autoIncrement, needAddLimit,
                     TableTypeEnum.TYPE_SHARDING_TABLE, strDatoNodes, null, false, parentTable, joinKey, parentKey, incrementColumn);
 
             if (tables.containsKey(table.getName())) {
@@ -433,6 +435,7 @@ public class XMLSchemaLoader implements SchemaLoader {
 
     private void loadDataNodes(Element root) {
         NodeList list = root.getElementsByTagName("dataNode");
+        Set<String> checkSet = new HashSet<>();
         for (int i = 0, n = list.getLength(); i < n; i++) {
             Element element = (Element) list.item(i);
             String dnNamePre = element.getAttribute("name");
@@ -466,11 +469,11 @@ public class XMLSchemaLoader implements SchemaLoader {
                     String dnName = dnNames[k];
                     String databaseName = hd[1];
                     String hostName = hd[0];
-                    createDataNode(dnName, databaseName, hostName);
+                    createDataNode(dnName, databaseName, hostName, checkSet);
                 }
 
             } else {
-                createDataNode(dnNamePre, databaseStr, host);
+                createDataNode(dnNamePre, databaseStr, host, checkSet);
             }
 
         }
@@ -494,9 +497,14 @@ public class XMLSchemaLoader implements SchemaLoader {
         return mhdList;
     }
 
-    private void createDataNode(String dnName, String database, String host) {
+    private void createDataNode(String dnName, String database, String host, Set checkSet) {
 
         DataNodeConfig conf = new DataNodeConfig(dnName, database, host);
+        if (checkSet.contains(host + "#" + database)) {
+            throw new ConfigException("dataNode " + conf.getName() + " use the same dataHost&database with other dataNode");
+        } else {
+            checkSet.add(host + "#" + database);
+        }
         if (dataNodes.containsKey(conf.getName())) {
             throw new ConfigException("dataNode " + conf.getName() + " duplicated!");
         }
@@ -537,7 +545,7 @@ public class XMLSchemaLoader implements SchemaLoader {
         String passwordEncryty = DecryptUtil.dbHostDecrypt(usingDecrypt, nodeHost, user, password);
         String disabledStr = ConfigUtil.checkAndGetAttribute(node, "disabled", "false", problemReporter);
         boolean disabled = Boolean.parseBoolean(disabledStr);
-        String weightStr = ConfigUtil.checkAndGetAttribute(node, "weight", String.valueOf(PhysicalDBPool.WEIGHT), problemReporter);
+        String weightStr = ConfigUtil.checkAndGetAttribute(node, "weight", String.valueOf(AbstractPhysicalDBPool.WEIGHT), problemReporter);
         int weight = Integer.parseInt(weightStr);
 
         DBHostConfig conf = new DBHostConfig(nodeHost, ip, port, nodeUrl, user, passwordEncryty, disabled);
@@ -599,7 +607,10 @@ public class XMLSchemaLoader implements SchemaLoader {
             } else if (!"0".equals(tempReadHostAvailableStr)) {
                 problemReporter.warn("dataHost[" + name + "] attribute tempReadHostAvailable " + tempReadHostAvailableStr + " in schema.xml is illegal, use 0 replaced!");
             }
-            final String heartbeatSQL = element.getElementsByTagName("heartbeat").item(0).getTextContent();
+            Element heartbeat = (Element) element.getElementsByTagName("heartbeat").item(0);
+            final String heartbeatSQL = heartbeat.getTextContent();
+            final String strHBErrorRetryCount = ConfigUtil.checkAndGetAttribute(heartbeat, "errorRetryCount", "0", problemReporter);
+            final String strHBTimeout = ConfigUtil.checkAndGetAttribute(heartbeat, "timeout", "0", problemReporter);
 
             NodeList writeNodes = element.getElementsByTagName("writeHost");
             if (writeNodes.getLength() < 1) {
@@ -632,13 +643,11 @@ public class XMLSchemaLoader implements SchemaLoader {
                         } else {
                             hostNames.add(readHostName);
                         }
-                        if (!tmpDBHostConfig.isDisabled()) {
-                            readDbConfList.add(tmpDBHostConfig);
-                        }
+                        readDbConfList.add(tmpDBHostConfig);
                     }
                     if (readDbConfList.size() > 0) {
                         DBHostConfig[] readDbConfs = readDbConfList.toArray(new DBHostConfig[readDbConfList.size()]);
-                        if (balance != 0) {
+                        if (balance != AbstractPhysicalDBPool.BALANCE_NONE) {
                             readHostsMap.put(w, readDbConfs);
                         } else {
                             standbyReadHostsMap.put(w, readDbConfs);
@@ -652,6 +661,8 @@ public class XMLSchemaLoader implements SchemaLoader {
             hostConf.setMinCon(minCon);
             hostConf.setBalance(balance);
             hostConf.setHearbeatSQL(heartbeatSQL);
+            hostConf.setHeartbeatTimeout(Integer.parseInt(strHBTimeout) * 1000);
+            hostConf.setErrorRetryCount(Integer.parseInt(strHBErrorRetryCount));
             dataHosts.put(hostConf.getName(), hostConf);
         }
     }

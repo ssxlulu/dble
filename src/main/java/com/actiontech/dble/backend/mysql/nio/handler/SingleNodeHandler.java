@@ -1,8 +1,8 @@
 /*
-* Copyright (C) 2016-2019 ActionTech.
-* based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
-* License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
-*/
+ * Copyright (C) 2016-2019 ActionTech.
+ * based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
+ * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
+ */
 package com.actiontech.dble.backend.mysql.nio.handler;
 
 import com.actiontech.dble.DbleServer;
@@ -19,6 +19,7 @@ import com.actiontech.dble.route.RouteResultset;
 import com.actiontech.dble.route.RouteResultsetNode;
 import com.actiontech.dble.server.NonBlockingSession;
 import com.actiontech.dble.server.ServerConnection;
+import com.actiontech.dble.singleton.CacheService;
 import com.actiontech.dble.statistic.stat.QueryResult;
 import com.actiontech.dble.statistic.stat.QueryResultDispatcher;
 import com.actiontech.dble.util.StringUtil;
@@ -28,6 +29,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @author mycat
@@ -37,7 +39,7 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
     private static final Logger LOGGER = LoggerFactory.getLogger(SingleNodeHandler.class);
 
     private final RouteResultsetNode node;
-    private final RouteResultset rrs;
+    protected final RouteResultset rrs;
     protected final NonBlockingSession session;
 
     // only one thread access at one time no need lock
@@ -47,13 +49,14 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
     private long resultSize;
     long selectRows;
 
-    private String primaryKeyTable = null;
-    private int primaryKeyIndex = -1;
+    private String cacheKeyTable = null;
+    private int cacheKeyIndex = -1;
 
     private boolean prepared;
     private int fieldCount;
     private List<FieldPacket> fieldPackets = new ArrayList<>();
     private volatile boolean connClosed = false;
+    protected AtomicBoolean writeToClient = new AtomicBoolean(false);
 
     public SingleNodeHandler(RouteResultset rrs, NonBlockingSession session) {
         this.rrs = rrs;
@@ -70,14 +73,21 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
 
     public void execute() throws Exception {
         connClosed = false;
-        this.packetId = (byte) session.getPacketId().get();
+        if (rrs.isLoadData()) {
+            packetId = session.getSource().getLoadDataInfileHandler().getLastPackId();
+        } else {
+            packetId = (byte) session.getPacketId().get();
+        }
         if (session.getTargetCount() > 0) {
             BackendConnection conn = session.getTarget(node);
             if (conn == null && rrs.isGlobalTable() && rrs.getGlobalBackupNodes() != null) {
+                // read only trx for global table
                 for (String dataNode : rrs.getGlobalBackupNodes()) {
                     RouteResultsetNode tmpNode = new RouteResultsetNode(dataNode, rrs.getSqlType(), rrs.getStatement());
                     conn = session.getTarget(tmpNode);
                     if (conn != null) {
+                        session.getTargetMap().remove(tmpNode);
+                        session.bindConnection(node, conn);
                         break;
                     }
                 }
@@ -94,11 +104,9 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
         ServerConfig conf = DbleServer.getInstance().getConfig();
         PhysicalDBNode dn = conf.getDataNodes().get(node.getName());
         dn.getConnection(dn.getDatabase(), session.getSource().isTxStart(), session.getSource().isAutocommit(), node, this, node);
-
-
     }
 
-    private void execute(BackendConnection conn) {
+    protected void execute(BackendConnection conn) {
         if (session.closed()) {
             session.clearResources(rrs);
             return;
@@ -118,7 +126,6 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
     public void connectionAcquired(final BackendConnection conn) {
         session.bindConnection(node, conn);
         execute(conn);
-
     }
 
     @Override
@@ -154,20 +161,21 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
         if (syncFinished) {
             session.releaseConnectionIfSafe(conn, false);
         } else {
-            ((MySQLConnection) conn).quit();
+            conn.closeWithoutRsp("unfinished sync");
             session.getTargetMap().remove(conn.getAttachment());
         }
         source.setTxInterrupt(errMsg);
         session.handleSpecial(rrs, false);
 
-
-        if (buffer != null) {
-            /* SELECT 9223372036854775807 + 1;    response: field_count, field, eof, err */
-            buffer = source.writeToBuffer(errPkg.toBytes(), allocBuffer());
-            session.setResponseTime(false);
-            source.write(buffer);
-        } else {
-            errPkg.write(source);
+        if (writeToClient.compareAndSet(false, true)) {
+            if (buffer != null) {
+                /* SELECT 9223372036854775807 + 1;    response: field_count, field, eof, err */
+                buffer = source.writeToBuffer(errPkg.toBytes(), allocBuffer());
+                session.setResponseTime(false);
+                source.write(buffer);
+            } else {
+                errPkg.write(source);
+            }
         }
     }
 
@@ -211,16 +219,19 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
             session.multiStatementPacket(ok, packetId);
             boolean multiStatementFlag = session.getIsMultiStatement().get();
             doSqlStat();
-            ok.write(source);
+            if (rrs.isCallStatement() || writeToClient.compareAndSet(false, true)) {
+                ok.write(source);
+            }
             session.multiStatementNextSql(multiStatementFlag);
         }
     }
 
-    private void executeMetaDataFailed(BackendConnection conn) {
+    protected void executeMetaDataFailed(BackendConnection conn) {
         ErrorPacket errPacket = new ErrorPacket();
         errPacket.setPacketId(++packetId);
         errPacket.setErrNo(ErrorCode.ER_META_DATA);
-        String errMsg = "Create TABLE OK, but generate metedata failed for the current druid parser can not recognize part of the sql";
+        String errMsg = "Create TABLE OK, but generate metedata failed. The reason may be that the current druid parser can not recognize part of the sql" +
+                " or the user for backend mysql does not have permission to execute the heartbeat sql.";
         errPacket.setMessage(StringUtil.encode(errMsg, session.getSource().getCharset().getResults()));
 
         session.setBackendResponseEndTime((MySQLConnection) conn);
@@ -229,7 +240,9 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
         session.multiStatementPacket(errPacket, packetId);
         boolean multiStatementFlag = session.getIsMultiStatement().get();
         doSqlStat();
-        errPacket.write(session.getSource());
+        if (writeToClient.compareAndSet(false, true)) {
+            errPacket.write(session.getSource());
+        }
         session.multiStatementNextSql(multiStatementFlag);
     }
 
@@ -248,15 +261,16 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
             session.releaseConnectionIfSafe(conn, false);
         }
 
-
         eof[3] = ++packetId;
         session.multiStatementPacket(eof, packetId);
         ServerConnection source = session.getSource();
-        buffer = source.writeToBuffer(eof, allocBuffer());
         session.setResponseTime(true);
         boolean multiStatementFlag = session.getIsMultiStatement().get();
         doSqlStat();
-        source.write(buffer);
+        if (writeToClient.compareAndSet(false, true)) {
+            buffer = source.writeToBuffer(eof, allocBuffer());
+            source.write(buffer);
+        }
         session.multiStatementNextSql(multiStatementFlag);
     }
 
@@ -298,50 +312,52 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
         this.resultSize += eof.length;
 
 
-        String primaryKey = null;
-        if (rrs.hasPrimaryKeyToCache()) {
-            String[] items = rrs.getPrimaryKeyItems();
-            primaryKeyTable = items[0];
-            primaryKey = items[1];
+        String cacheKey = null;
+        if (rrs.hasCacheKeyToCache()) {
+            String[] items = rrs.getCacheKeyItems();
+            cacheKeyTable = items[0];
+            cacheKey = items[1];
         }
 
         header[3] = ++packetId;
 
         ServerConnection source = session.getSource();
-        buffer = source.writeToBuffer(header, allocBuffer());
-        for (int i = 0, len = fields.size(); i < len; ++i) {
-            byte[] field = fields.get(i);
-            field[3] = ++packetId;
+        if (!writeToClient.get()) {
+            buffer = source.writeToBuffer(header, allocBuffer());
+            for (int i = 0, len = fields.size(); i < len; ++i) {
+                byte[] field = fields.get(i);
+                field[3] = ++packetId;
 
-            // save field
-            FieldPacket fieldPk = new FieldPacket();
-            fieldPk.read(field);
-            if (rrs.getSchema() != null) {
-                fieldPk.setDb(rrs.getSchema().getBytes());
-            }
-            if (rrs.getTableAlias() != null) {
-                fieldPk.setTable(rrs.getTableAlias().getBytes());
-            }
-            if (rrs.getTable() != null) {
-                fieldPk.setOrgTable(rrs.getTable().getBytes());
-            }
-            fieldPackets.add(fieldPk);
-
-            // find primary key index
-            if (primaryKey != null && primaryKeyIndex == -1) {
-                String fieldName = new String(fieldPk.getName());
-                if (primaryKey.equalsIgnoreCase(fieldName)) {
-                    primaryKeyIndex = i;
+                // save field
+                FieldPacket fieldPk = new FieldPacket();
+                fieldPk.read(field);
+                if (rrs.getSchema() != null) {
+                    fieldPk.setDb(rrs.getSchema().getBytes());
                 }
+                if (rrs.getTableAlias() != null) {
+                    fieldPk.setTable(rrs.getTableAlias().getBytes());
+                }
+                if (rrs.getTable() != null) {
+                    fieldPk.setOrgTable(rrs.getTable().getBytes());
+                }
+                fieldPackets.add(fieldPk);
+
+                // find cache key index
+                if (cacheKey != null && cacheKeyIndex == -1) {
+                    String fieldName = new String(fieldPk.getName());
+                    if (cacheKey.equalsIgnoreCase(fieldName)) {
+                        cacheKeyIndex = i;
+                    }
+                }
+
+                buffer = fieldPk.write(buffer, source, false);
             }
 
-            buffer = fieldPk.write(buffer, source, false);
+            fieldCount = fieldPackets.size();
+
+            eof[3] = ++packetId;
+            buffer = source.writeToBuffer(eof, buffer);
         }
-
-        fieldCount = fieldPackets.size();
-
-        eof[3] = ++packetId;
-        buffer = source.writeToBuffer(eof, buffer);
     }
 
     @Override
@@ -353,33 +369,35 @@ public class SingleNodeHandler implements ResponseHandler, LoadDataResponseHandl
         row[3] = ++packetId;
 
         RowDataPacket rowDataPk = null;
-        // cache primaryKey-> dataNode
-        if (primaryKeyIndex != -1) {
+        // cache cacheKey-> dataNode
+        if (cacheKeyIndex != -1) {
             rowDataPk = new RowDataPacket(fieldCount);
             rowDataPk.read(row);
-            byte[] key = rowDataPk.fieldValues.get(primaryKeyIndex);
+            byte[] key = rowDataPk.fieldValues.get(cacheKeyIndex);
             if (key != null) {
-                String primaryKey = new String(key);
+                String cacheKey = new String(key);
                 RouteResultsetNode rNode = (RouteResultsetNode) conn.getAttachment();
-                LayerCachePool pool = DbleServer.getInstance().getRouterService().getTableId2DataNodeCache();
+                LayerCachePool pool = CacheService.getTableId2DataNodeCache();
                 if (pool != null) {
-                    pool.putIfAbsent(primaryKeyTable, primaryKey, rNode.getName());
+                    pool.putIfAbsent(cacheKeyTable, cacheKey, rNode.getName());
                 }
             }
         }
 
-        if (prepared) {
-            if (rowDataPk == null) {
-                rowDataPk = new RowDataPacket(fieldCount);
-                rowDataPk.read(row);
+        if (!writeToClient.get()) {
+            if (prepared) {
+                if (rowDataPk == null) {
+                    rowDataPk = new RowDataPacket(fieldCount);
+                    rowDataPk.read(row);
+                }
+                BinaryRowDataPacket binRowDataPk = new BinaryRowDataPacket();
+                binRowDataPk.read(fieldPackets, rowDataPk);
+                binRowDataPk.setPacketId(rowDataPk.getPacketId());
+                buffer = binRowDataPk.write(buffer, session.getSource(), true);
+            } else {
+                buffer = session.getSource().writeToBuffer(row, allocBuffer());
+                //session.getSource().write(row);
             }
-            BinaryRowDataPacket binRowDataPk = new BinaryRowDataPacket();
-            binRowDataPk.read(fieldPackets, rowDataPk);
-            binRowDataPk.setPacketId(rowDataPk.getPacketId());
-            buffer = binRowDataPk.write(buffer, session.getSource(), true);
-        } else {
-            buffer = session.getSource().writeToBuffer(row, allocBuffer());
-            //session.getSource().write(row);
         }
         return false;
     }

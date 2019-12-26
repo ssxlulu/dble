@@ -24,8 +24,7 @@ import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlDeleteStatement;
 
 import java.sql.SQLException;
 import java.sql.SQLNonTransientException;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.*;
 
 /**
  * see http://dev.mysql.com/doc/refman/5.7/en/delete.html
@@ -34,7 +33,7 @@ import java.util.Set;
  */
 public class DruidDeleteParser extends DefaultDruidParser {
     @Override
-    public SchemaConfig visitorParse(SchemaConfig schema, RouteResultset rrs, SQLStatement stmt, ServerSchemaStatVisitor visitor, ServerConnection sc)
+    public SchemaConfig visitorParse(SchemaConfig schema, RouteResultset rrs, SQLStatement stmt, ServerSchemaStatVisitor visitor, ServerConnection sc, boolean isExplain)
             throws SQLException {
         String schemaName = schema == null ? null : schema.getName();
         MySqlDeleteStatement delete = (MySqlDeleteStatement) stmt;
@@ -61,7 +60,7 @@ public class DruidDeleteParser extends DefaultDruidParser {
             }
             schema = schemaInfo.getSchemaConfig();
             rrs.setStatement(RouterUtil.removeSchema(rrs.getStatement(), schemaInfo.getSchema()));
-            super.visitorParse(schema, rrs, stmt, visitor, sc);
+            super.visitorParse(schema, rrs, stmt, visitor, sc, isExplain);
             if (visitor.getSubQueryList().size() > 0) {
                 StringPtr noShardingNode = new StringPtr(null);
                 Set<String> schemas = new HashSet<>();
@@ -86,10 +85,13 @@ public class DruidDeleteParser extends DefaultDruidParser {
                 rrs.setFinishedRoute(true);
                 return schema;
             }
+
+            if (delete.getLimit() != null) {
+                this.updateAndDeleteLimitRoute(rrs, tableName, schema);
+            }
         }
         return schema;
     }
-
 
 
 }

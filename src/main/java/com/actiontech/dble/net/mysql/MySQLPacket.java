@@ -5,7 +5,7 @@
 */
 package com.actiontech.dble.net.mysql;
 
-import com.actiontech.dble.net.BackendAIOConnection;
+import com.actiontech.dble.backend.mysql.nio.MySQLConnection;
 import com.actiontech.dble.net.FrontendConnection;
 
 import java.nio.ByteBuffer;
@@ -158,6 +158,10 @@ public abstract class MySQLPacket {
      * mysql_stmt_fetch
      */
     public static final byte COM_STMT_FETCH = 28;
+    /**
+     * mysql-reset-connection
+     */
+    public static final byte COM_RESET_CONNECTION = 31;
 
     /**
      * heartbeat
@@ -181,7 +185,7 @@ public abstract class MySQLPacket {
     /**
      * write to backend connection
      */
-    public void write(BackendAIOConnection c) {
+    public void write(MySQLConnection c) {
         throw new UnsupportedOperationException();
     }
 

@@ -10,6 +10,7 @@ import com.actiontech.dble.config.ErrorCode;
 import com.actiontech.dble.config.ServerPrivileges;
 import com.actiontech.dble.config.model.SchemaConfig;
 import com.actiontech.dble.config.model.UserConfig;
+import com.actiontech.dble.plan.common.item.function.ItemCreate;
 import com.actiontech.dble.plan.common.ptr.StringPtr;
 import com.actiontech.dble.route.parser.druid.ServerSchemaStatVisitor;
 import com.actiontech.dble.route.util.RouterUtil;
@@ -18,11 +19,11 @@ import com.actiontech.dble.util.StringUtil;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
+import com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.statement.*;
 import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlDeleteStatement;
 import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlSelectQueryBlock;
-import com.alibaba.druid.sql.ast.statement.SQLUnionQuery;
 import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlUpdateStatement;
 
 import java.sql.SQLException;
@@ -111,7 +112,7 @@ public final class SchemaUtil {
                 return schemaInfo;
             }
         }
-        schemaInfo.tableAlias = tableAlias == null ? schemaInfo.table : tableAlias;
+        schemaInfo.tableAlias = tableAlias == null ? schemaInfo.table : StringUtil.removeBackQuote(tableAlias);
         if (schemaInfo.schema == null) {
             String msg = "No database selected";
             throw new SQLException(msg, "3D000", ErrorCode.ER_NO_DB_ERROR);
@@ -146,6 +147,14 @@ public final class SchemaUtil {
             throws SQLException {
         if (sqlSelectQuery instanceof MySqlSelectQueryBlock) {
             MySqlSelectQueryBlock mySqlSelectQueryBlock = (MySqlSelectQueryBlock) sqlSelectQuery;
+            //CHECK IF THE SELECT LIST HAS INNER_FUNC IN,WITCH SHOULD BE DEAL BY DBLE
+            for (SQLSelectItem item : mySqlSelectQueryBlock.getSelectList()) {
+                if (item.getExpr() instanceof SQLMethodInvokeExpr) {
+                    if (ItemCreate.getInstance().isInnerFunc(((SQLMethodInvokeExpr) item.getExpr()).getMethodName())) {
+                        return false;
+                    }
+                }
+            }
             return isNoSharding(source, mySqlSelectQueryBlock.getFrom(), selectStmt, childSelectStmt, contextSchema, schemas, dataNode);
         } else if (sqlSelectQuery instanceof SQLUnionQuery) {
             return isNoSharding(source, (SQLUnionQuery) sqlSelectQuery, selectStmt, contextSchema, schemas, dataNode);
@@ -175,6 +184,10 @@ public final class SchemaUtil {
             } else if (tables instanceof SQLSubqueryTableSource) {
                 SQLSelectQuery sqlSelectQuery = ((SQLSubqueryTableSource) tables).getSelect().getQuery();
                 if (!isNoSharding(source, sqlSelectQuery, stmt, new SQLSelectStatement(new SQLSelect(sqlSelectQuery)), contextSchema, schemas, dataNode)) {
+                    return false;
+                }
+            } else if (tables instanceof SQLUnionQueryTableSource) {
+                if (!isNoSharding(source, ((SQLUnionQueryTableSource) tables).getUnion(), stmt, contextSchema, schemas, dataNode)) {
                     return false;
                 }
             } else {
@@ -248,6 +261,7 @@ public final class SchemaUtil {
         private SchemaConfig schemaConfig;
         private boolean dual = false;
         private String tableAlias;
+
         @Override
         public String toString() {
             return "SchemaInfo{" + "table='" + table + '\'' +

@@ -13,6 +13,8 @@ import com.actiontech.dble.config.ErrorCode;
 import com.actiontech.dble.config.Fields;
 import com.actiontech.dble.config.model.SchemaConfig;
 import com.actiontech.dble.config.model.TableConfig;
+import com.actiontech.dble.singleton.RouteService;
+import com.actiontech.dble.singleton.ProxyMeta;
 import com.actiontech.dble.net.mysql.EOFPacket;
 import com.actiontech.dble.net.mysql.FieldPacket;
 import com.actiontech.dble.net.mysql.ResultSetHeaderPacket;
@@ -74,54 +76,12 @@ public final class ExplainHandler {
             return;
         }
 
-        ByteBuffer buffer = c.allocate();
-
-        // write header
-        ResultSetHeaderPacket header = PacketUtil.getHeader(FIELD_COUNT);
-        byte packetId = header.getPacketId();
-        buffer = header.write(buffer, c, true);
-
-        // write fields
-        for (FieldPacket field : FIELDS) {
-            field.setPacketId(++packetId);
-            buffer = field.write(buffer, c, true);
-        }
-
-        // write eof
-        EOFPacket eof = new EOFPacket();
-        eof.setPacketId(++packetId);
-        buffer = eof.write(buffer, c, true);
-        if (!rrs.isNeedOptimizer()) {
-            // write rows
-            for (RouteResultsetNode node : rrs.getNodes()) {
-                RowDataPacket row = getRow(node, c.getCharset().getResults());
-                row.setPacketId(++packetId);
-                buffer = row.write(buffer, c, true);
-            }
-        } else {
-            BaseHandlerBuilder builder = buildNodes(rrs, c);
-            List<ReferenceHandlerInfo> results = ComplexQueryPlanUtil.getComplexQueryResult(builder);
-            for (ReferenceHandlerInfo result : results) {
-                RowDataPacket row = new RowDataPacket(FIELD_COUNT);
-                row.add(StringUtil.encode(result.getName(), c.getCharset().getResults()));
-                row.add(StringUtil.encode(result.getType(), c.getCharset().getResults()));
-                row.add(StringUtil.encode(result.getRefOrSQL(), c.getCharset().getResults()));
-                row.setPacketId(++packetId);
-                buffer = row.write(buffer, c, true);
-            }
-        }
-        // write last eof
-        EOFPacket lastEof = new EOFPacket();
-        lastEof.setPacketId(++packetId);
-        buffer = lastEof.write(buffer, c, true);
-
-        // post write
-        c.write(buffer);
+        writeOutHeadAndEof(c, rrs);
     }
 
     private static BaseHandlerBuilder buildNodes(RouteResultset rrs, ServerConnection c) {
         SQLSelectStatement ast = (SQLSelectStatement) rrs.getSqlStatement();
-        MySQLPlanNodeVisitor visitor = new MySQLPlanNodeVisitor(c.getSchema(), c.getCharset().getResultsIndex(), DbleServer.getInstance().getTmManager(), false);
+        MySQLPlanNodeVisitor visitor = new MySQLPlanNodeVisitor(c.getSchema(), c.getCharset().getResultsIndex(), ProxyMeta.getInstance().getTmManager(), false);
         visitor.visit(ast);
         PlanNode node = visitor.getTableNode();
         node.setSql(rrs.getStatement());
@@ -160,6 +120,7 @@ public final class ExplainHandler {
             case ServerParse.MYSQL_CMD_COMMENT:
             case ServerParse.HELP:
             case ServerParse.LOAD_DATA_INFILE_SQL:
+            case ServerParse.FLUSH:
                 return true;
             default:
                 return false;
@@ -191,7 +152,7 @@ public final class ExplainHandler {
                 c.writeErrMessage(ErrorCode.ER_PARSE_ERROR, "insert sql using sequence,the explain result depends by sequence");
                 return null;
             }
-            return DbleServer.getInstance().getRouterService().route(schema, sqlType, stmt, c);
+            return RouteService.getInstance().route(schema, sqlType, stmt, c, true);
         } catch (Exception e) {
             if (e instanceof SQLException && !(e instanceof SQLNonTransientException)) {
                 SQLException sqlException = (SQLException) e;
@@ -231,5 +192,51 @@ public final class ExplainHandler {
             return true;
         }
         return false;
+    }
+
+    public static void writeOutHeadAndEof(ServerConnection c, RouteResultset rrs) {
+        ByteBuffer buffer = c.allocate();
+        // write header
+        ResultSetHeaderPacket header = PacketUtil.getHeader(FIELD_COUNT);
+        byte packetId = header.getPacketId();
+        buffer = header.write(buffer, c, true);
+
+        // write fields
+        for (FieldPacket field : FIELDS) {
+            field.setPacketId(++packetId);
+            buffer = field.write(buffer, c, true);
+        }
+
+        // write eof
+        EOFPacket eof = new EOFPacket();
+        eof.setPacketId(++packetId);
+        buffer = eof.write(buffer, c, true);
+
+        if (!rrs.isNeedOptimizer()) {
+            // write rows
+            for (RouteResultsetNode node : rrs.getNodes()) {
+                RowDataPacket row = getRow(node, c.getCharset().getResults());
+                row.setPacketId(++packetId);
+                buffer = row.write(buffer, c, true);
+            }
+        } else {
+            BaseHandlerBuilder builder = buildNodes(rrs, c);
+            List<ReferenceHandlerInfo> results = ComplexQueryPlanUtil.getComplexQueryResult(builder);
+            for (ReferenceHandlerInfo result : results) {
+                RowDataPacket row = new RowDataPacket(FIELD_COUNT);
+                row.add(StringUtil.encode(result.getName(), c.getCharset().getResults()));
+                row.add(StringUtil.encode(result.getType(), c.getCharset().getResults()));
+                row.add(StringUtil.encode(result.getRefOrSQL(), c.getCharset().getResults()));
+                row.setPacketId(++packetId);
+                buffer = row.write(buffer, c, true);
+            }
+        }
+        // write last eof
+        EOFPacket lastEof = new EOFPacket();
+        lastEof.setPacketId(++packetId);
+        buffer = lastEof.write(buffer, c, true);
+
+        // post write
+        c.write(buffer);
     }
 }

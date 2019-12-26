@@ -1,12 +1,14 @@
 package com.actiontech.dble.alarm;
 
-import com.actiontech.dble.DbleServer;
 import com.actiontech.dble.cluster.ClusterController;
-import com.actiontech.dble.cluster.ClusterGeneralConfig;
+import com.actiontech.dble.singleton.ClusterGeneralConfig;
+import com.actiontech.dble.singleton.AlertGeneralConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.BlockingQueue;
+
+import static com.actiontech.dble.singleton.AlertGeneralConfig.DEFAULT_ALERT;
 
 /**
  * Created by szf on 2019/3/22.
@@ -16,7 +18,6 @@ public class AlertSender implements Runnable {
 
     private final BlockingQueue<AlertTask> alertQueue;
 
-    private static final Alert DEFAULT_ALERT = new NoAlert();
     private static volatile Alert alert;
 
     public AlertSender(BlockingQueue<AlertTask> alertQueue) {
@@ -59,12 +60,15 @@ public class AlertSender implements Runnable {
 
 
     public void initAlert() {
-        if (DbleServer.getInstance().isUseGeneralCluster() &&
+        AlertGeneralConfig confg = AlertGeneralConfig.getInstance();
+        confg.initAlertConfig();
+        alert = confg.customizedAlert();
+        if (DEFAULT_ALERT == alert &&
+                ClusterGeneralConfig.isUseGeneralCluster() &&
                 (ClusterController.CONFIG_MODE_UCORE.equals(ClusterGeneralConfig.getInstance().getClusterType()) ||
                         ClusterController.CONFIG_MODE_USHARD.equals(ClusterGeneralConfig.getInstance().getClusterType()))) {
+            LOGGER.info("Ucore cluster,use default alert UcoreAlert");
             alert = new UcoreAlert();
-        } else {
-            alert = DEFAULT_ALERT;
         }
     }
 }

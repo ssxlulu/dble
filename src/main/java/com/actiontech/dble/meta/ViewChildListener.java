@@ -5,17 +5,15 @@
 
 package com.actiontech.dble.meta;
 
-import com.actiontech.dble.DbleServer;
 import com.actiontech.dble.btrace.provider.ClusterDelayProvider;
 import com.actiontech.dble.cluster.ClusterParamCfg;
 import com.actiontech.dble.config.loader.zkprocess.comm.ZkConfig;
+import com.actiontech.dble.singleton.ProxyMeta;
 import com.alibaba.fastjson.JSONObject;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.ChildData;
 import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
 import org.apache.curator.framework.recipes.cache.PathChildrenCacheListener;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 
@@ -23,7 +21,6 @@ import static com.actiontech.dble.backend.mysql.view.Repository.*;
 
 
 public class ViewChildListener implements PathChildrenCacheListener {
-    private static final Logger LOGGER = LoggerFactory.getLogger(ViewChildListener.class);
 
     @Override
     public void childEvent(CuratorFramework client, PathChildrenCacheEvent event) throws Exception {
@@ -44,7 +41,6 @@ public class ViewChildListener implements PathChildrenCacheListener {
         }
     }
 
-
     /**
      * delete the view data from view meta
      *
@@ -56,15 +52,14 @@ public class ViewChildListener implements PathChildrenCacheListener {
         String schema = paths[paths.length - 1].split(":")[0];
         String viewName = paths[paths.length - 1].split(":")[1];
 
-        DbleServer.getInstance().getTmManager().addMetaLock(schema, viewName, "DROP VIEW " + viewName);
+        ProxyMeta.getInstance().getTmManager().addMetaLock(schema, viewName, "DROP VIEW " + viewName);
         try {
-            DbleServer.getInstance().getTmManager().getCatalogs().get(schema).getViewMetas().remove(viewName);
+            ProxyMeta.getInstance().getTmManager().getCatalogs().get(schema).getViewMetas().remove(viewName);
         } finally {
-            DbleServer.getInstance().getTmManager().removeMetaLock(schema, viewName);
+            ProxyMeta.getInstance().getTmManager().removeMetaLock(schema, viewName);
         }
 
     }
-
 
     /**
      * update the meta if the view updated
@@ -83,10 +78,10 @@ public class ViewChildListener implements PathChildrenCacheListener {
         String createSql = obj.getString(CREATE_SQL);
         String schema = paths[paths.length - 1].split(SCHEMA_VIEW_SPLIT)[0];
 
-        ViewMeta vm = new ViewMeta(createSql, schema, DbleServer.getInstance().getTmManager());
-        vm.initAndSet(isReplace, false);
+        ViewMeta vm = new ViewMeta(schema, createSql, ProxyMeta.getInstance().getTmManager());
+        vm.init(isReplace);
+        vm.addMeta(false);
 
     }
-
 
 }

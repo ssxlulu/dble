@@ -30,6 +30,7 @@ import com.actiontech.dble.route.RouteResultset;
 import com.actiontech.dble.route.util.RouterUtil;
 import com.actiontech.dble.server.ServerConnection;
 import com.actiontech.dble.server.parser.ServerParse;
+import com.actiontech.dble.singleton.ProxyMeta;
 import com.actiontech.dble.util.StringUtil;
 import com.google.common.base.Strings;
 
@@ -119,7 +120,7 @@ public final class ShowTables {
             List<FieldPacket> fieldPackets = new ArrayList<>(2);
             bufInf = writeFullTablesHeader(buffer, c, cSchema, fieldPackets);
             if (info.getWhere() != null) {
-                MySQLItemVisitor mev = new MySQLItemVisitor(c.getSchema(), c.getCharset().getResultsIndex(), DbleServer.getInstance().getTmManager());
+                MySQLItemVisitor mev = new MySQLItemVisitor(c.getSchema(), c.getCharset().getResultsIndex(), ProxyMeta.getInstance().getTmManager());
                 info.getWhereExpr().accept(mev);
                 List<Field> sourceFields = HandlerTool.createFields(fieldPackets);
                 Item whereItem = HandlerTool.createItem(mev.getItem(), sourceFields, 0, false, DMLResponseHandler.HandlerType.WHERE);
@@ -141,10 +142,10 @@ public final class ShowTables {
         int i = 0;
         byte packetId = 0;
         header.setPacketId(++packetId);
-        fields[i] = PacketUtil.getField("Tables in " + cSchema, Fields.FIELD_TYPE_VAR_STRING);
+        fields[i] = PacketUtil.getField("Tables_in_" + cSchema, Fields.FIELD_TYPE_VAR_STRING);
         fields[i].setPacketId(++packetId);
         fieldPackets.add(fields[i]);
-        fields[i + 1] = PacketUtil.getField("Table_type  ", Fields.FIELD_TYPE_VAR_STRING);
+        fields[i + 1] = PacketUtil.getField("Table_type", Fields.FIELD_TYPE_VAR_STRING);
         fields[i + 1].setPacketId(++packetId);
         fieldPackets.add(fields[i + 1]);
 
@@ -197,7 +198,7 @@ public final class ShowTables {
         int i = 0;
         byte packetId = 0;
         header.setPacketId(++packetId);
-        fields[i] = PacketUtil.getField("Tables in " + cSchema, Fields.FIELD_TYPE_VAR_STRING);
+        fields[i] = PacketUtil.getField("Tables_in_" + cSchema, Fields.FIELD_TYPE_VAR_STRING);
         fields[i].setPacketId(++packetId);
 
         EOFPacket eof = new EOFPacket();
@@ -237,7 +238,7 @@ public final class ShowTables {
 
     public static Map<String, String> getTableSet(String cSchema, ShowTablesStmtInfo info) {
         //remove the table which is not created but configured
-        SchemaMeta schemata = DbleServer.getInstance().getTmManager().getCatalogs().get(cSchema);
+        SchemaMeta schemata = ProxyMeta.getInstance().getTmManager().getCatalogs().get(cSchema);
         if (schemata == null) {
             return new HashMap<>();
         }

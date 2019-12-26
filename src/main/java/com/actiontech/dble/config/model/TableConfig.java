@@ -21,7 +21,7 @@ public class TableConfig {
     }
 
     private final String name;
-    private final String primaryKey;
+    private final String cacheKey;
     private final boolean autoIncrement;
     private final String incrementColumn;
     private final boolean needAddLimit;
@@ -30,7 +30,6 @@ public class TableConfig {
     private final RuleConfig rule;
     private final String partitionColumn;
     private final boolean ruleRequired;
-    private final boolean partionKeyIsPrimaryKey;
     private final boolean isNoSharding;
     /**
      * Child Table
@@ -41,12 +40,12 @@ public class TableConfig {
     private final String locateRTableKeySql;
     private final TableConfig directRouteTC;
 
-    public TableConfig(String name, String primaryKey, boolean autoIncrement, boolean needAddLimit,
+    public TableConfig(String name, String cacheKey, boolean autoIncrement, boolean needAddLimit,
                        TableTypeEnum tableType, String dataNode, RuleConfig rule, boolean ruleRequired, String incrementColumn) {
-        this(name, primaryKey, autoIncrement, needAddLimit, tableType, dataNode, rule, ruleRequired, null, null, null, incrementColumn);
+        this(name, cacheKey, autoIncrement, needAddLimit, tableType, dataNode, rule, ruleRequired, null, null, null, incrementColumn);
     }
 
-    public TableConfig(String name, String primaryKey, boolean autoIncrement, boolean needAddLimit,
+    public TableConfig(String name, String cacheKey, boolean autoIncrement, boolean needAddLimit,
                        TableTypeEnum tableType, String dataNode, RuleConfig rule, boolean ruleRequired, TableConfig parentTC,
                        String joinKey, String parentKey, String incrementColumn) {
         if (name == null) {
@@ -55,7 +54,7 @@ public class TableConfig {
             throw new IllegalArgumentException("dataNode name is null");
         }
         this.incrementColumn = incrementColumn;
-        this.primaryKey = primaryKey;
+        this.cacheKey = cacheKey;
         this.autoIncrement = autoIncrement;
         this.needAddLimit = needAddLimit;
         this.tableType = tableType;
@@ -75,14 +74,13 @@ public class TableConfig {
         Collections.addAll(dataNodes, theDataNodes);
         this.rule = rule;
         this.partitionColumn = (rule == null) ? null : rule.getColumn();
-        partionKeyIsPrimaryKey = (partitionColumn == null) ? primaryKey == null : partitionColumn.equals(primaryKey);
         this.ruleRequired = ruleRequired;
         this.parentTC = parentTC;
         if (parentTC != null) {
             this.joinKey = joinKey;
             this.parentKey = parentKey;
             if (parentTC.getParentTC() == null) {
-                if (parentKey.equals(parentTC.partitionColumn)) {
+                if (parentTC.partitionColumn.equals(parentKey)) {
                     // secondLevel ,parentKey==parent.partitionColumn
                     directRouteTC = parentTC;
                     locateRTableKeySql = null;
@@ -96,7 +94,7 @@ public class TableConfig {
                  * fatherTable joinkey =col2,parentkey = col1....so directRouteTC = grandTable
                  * thisTable joinkey = col3 ,parentkey = col2...so directRouteTC = grandTable
                  */
-                if (parentKey.equals(parentTC.joinKey)) {
+                if (parentTC.joinKey.equals(parentKey)) {
                     directRouteTC = parentTC.getDirectRouteTC();
                     locateRTableKeySql = null;
                 } else {
@@ -116,10 +114,10 @@ public class TableConfig {
     }
 
 
-    public TableConfig(String name, String primaryKey, boolean autoIncrement, boolean needAddLimit,
+    public TableConfig(String name, String cacheKey, boolean autoIncrement, boolean needAddLimit,
                        TableTypeEnum tableType, ArrayList<String> dataNode, RuleConfig rule, boolean ruleRequired, TableConfig parentTC,
                        String joinKey, String parentKey, String incrementColumn) {
-        this.primaryKey = primaryKey;
+        this.cacheKey = cacheKey;
         this.autoIncrement = autoIncrement;
         this.needAddLimit = needAddLimit;
         this.tableType = tableType;
@@ -128,7 +126,6 @@ public class TableConfig {
         this.rule = rule;
         this.partitionColumn = (rule == null) ? null : rule.getColumn();
         this.incrementColumn = incrementColumn;
-        partionKeyIsPrimaryKey = (partitionColumn == null) ? primaryKey == null : partitionColumn.equals(primaryKey);
         this.ruleRequired = ruleRequired;
         this.parentTC = parentTC;
         this.joinKey = joinKey;
@@ -164,17 +161,17 @@ public class TableConfig {
 
 
     TableConfig lowerCaseCopy(TableConfig parent) {
-        return new TableConfig(this.name.toLowerCase(), this.primaryKey, this.autoIncrement, this.needAddLimit,
+        return new TableConfig(this.name.toLowerCase(), this.cacheKey, this.autoIncrement, this.needAddLimit,
                 this.tableType, this.dataNodes, this.rule, this.ruleRequired, parent, this.joinKey, this.parentKey, this.incrementColumn);
 
     }
 
-    public String getTrueIncrementColumn() {
-        return incrementColumn != null ? incrementColumn : primaryKey;
+    public String getIncrementColumn() {
+        return incrementColumn;
     }
 
-    public String getPrimaryKey() {
-        return primaryKey;
+    public String getCacheKey() {
+        return cacheKey;
     }
 
     public boolean isAutoIncrement() {
@@ -201,23 +198,22 @@ public class TableConfig {
         TableConfig tb = this;
         StringBuilder tableSb = new StringBuilder();
         StringBuilder condition = new StringBuilder();
-        TableConfig prevTC = null;
+        TableConfig prevTC = tb;
         int level = 0;
         String latestCond = null;
         while (tb.parentTC != null) {
             tableSb.append(tb.parentTC.name).append(',');
-            String relation = null;
             if (level == 0) {
                 latestCond = " " + tb.parentTC.getName() + '.' + tb.parentKey + "=";
             } else {
-                relation = tb.parentTC.getName() + '.' + tb.parentKey + '=' + tb.name + '.' + tb.joinKey;
+                String relation = tb.parentTC.getName() + '.' + tb.parentKey + '=' + tb.name + '.' + tb.joinKey;
                 condition.append(relation).append(" AND ");
             }
             level++;
             prevTC = tb;
             tb = tb.parentTC;
         }
-        String sql = "SELECT " +
+        return "SELECT " +
                 prevTC.parentTC.name +
                 '.' +
                 prevTC.parentKey +
@@ -225,7 +221,6 @@ public class TableConfig {
                 tableSb.substring(0, tableSb.length() - 1) +
                 " WHERE " +
                 ((level < 2) ? latestCond : condition.toString() + latestCond);
-        return sql;
 
     }
 
@@ -284,10 +279,6 @@ public class TableConfig {
 
     public RuleConfig getRule() {
         return rule;
-    }
-
-    public boolean primaryKeyIsPartionKey() {
-        return partionKeyIsPrimaryKey;
     }
 
 

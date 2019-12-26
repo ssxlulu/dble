@@ -6,7 +6,6 @@
 package com.actiontech.dble.server.handler;
 
 import com.actiontech.dble.DbleServer;
-import com.actiontech.dble.backend.datasource.PhysicalDBPool;
 import com.actiontech.dble.backend.mysql.CharsetUtil;
 import com.actiontech.dble.config.ErrorCode;
 import com.actiontech.dble.config.Isolations;
@@ -31,7 +30,6 @@ import com.alibaba.druid.sql.parser.SQLStatementParser;
 
 import java.sql.SQLSyntaxErrorException;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -138,7 +136,7 @@ public final class SetHandler {
         NamesInfo charsetInfo = checkSetNames(stmt, charsetAndCollate[0], charsetAndCollate[1]);
         if (charsetInfo != null) {
             if (charsetInfo.charset == null) {
-                c.writeErrMessage(ErrorCode.ER_UNKNOWN_CHARACTER_SET, "Unknown character set in statement '" + stmt + "");
+                c.writeErrMessage(ErrorCode.ER_UNKNOWN_CHARACTER_SET, "Unknown character set in statement '" + stmt + "'");
                 return false;
             } else if (charsetInfo.collation == null) {
                 c.writeErrMessage(ErrorCode.ER_COLLATION_CHARSET_MISMATCH, "COLLATION '" + charsetAndCollate[1] + "' is not valid for CHARACTER SET '" + charsetAndCollate[0] + "'");
@@ -174,7 +172,7 @@ public final class SetHandler {
                 return true;
             }
         } else {
-            c.writeErrMessage(ErrorCode.ER_UNKNOWN_CHARACTER_SET, "Unknown character set in statement '" + stmt + "");
+            c.writeErrMessage(ErrorCode.ER_UNKNOWN_CHARACTER_SET, "Unknown character set in statement '" + stmt + "'");
             return false;
         }
     }
@@ -192,14 +190,8 @@ public final class SetHandler {
     private static void setStmtCallback(String multiStmt, ServerConnection c, List<Pair<KeyType, Pair<String, String>>> contextTask) {
         c.setContextTask(contextTask);
         OneRawSQLQueryResultHandler resultHandler = new OneRawSQLQueryResultHandler(new String[0], new SetCallBack(c));
-        Iterator<PhysicalDBPool> iterator = DbleServer.getInstance().getConfig().getDataHosts().values().iterator();
-        if (iterator.hasNext()) {
-            PhysicalDBPool pool = iterator.next();
-            SetTestJob sqlJob = new SetTestJob(multiStmt, pool.getSchemas()[0], resultHandler, c);
-            sqlJob.run();
-        } else {
-            c.writeErrMessage(ErrorCode.ER_YES, "no valid data host");
-        }
+        SetTestJob sqlJob = new SetTestJob(multiStmt, null, resultHandler, c);
+        sqlJob.run();
     }
 
     private static boolean handleVariableInMultiStmt(SQLAssignItem assignItem, ServerConnection c, List<Pair<KeyType, Pair<String, String>>> contextTask) {
@@ -832,10 +824,10 @@ public final class SetHandler {
 
     private static boolean checkSetNamesSyntax(String stmt) {
         //druid parser can't find syntax error,use regex to check again, but it is not strict
-        String regex = "^\\s*set\\s+names\\s+[`']?[a-zA-Z_0-9]+[`']?(\\s+collate\\s+[`']?[a-zA-Z_0-9]+[`']?)?;?\\s*$";
+        String regex = "set\\s+names\\s+[`']?[a-zA-Z_0-9]+[`']?(\\s+collate\\s+[`']?[a-zA-Z_0-9]+[`']?)?;?\\s*$";
         Pattern pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
         Matcher ma = pattern.matcher(stmt);
-        return ma.matches();
+        return ma.find();
     }
 
     private static NamesInfo checkSetNames(String stmt, String charset, String collate) {

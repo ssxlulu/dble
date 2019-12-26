@@ -24,18 +24,19 @@ import com.actiontech.dble.route.RouteResultsetNode;
 import com.actiontech.dble.server.NonBlockingSession;
 import com.actiontech.dble.server.ServerConnection;
 import com.actiontech.dble.server.parser.ServerParse;
+import com.actiontech.dble.singleton.CacheService;
 import com.actiontech.dble.statistic.stat.QueryResult;
 import com.actiontech.dble.statistic.stat.QueryResultDispatcher;
-import com.actiontech.dble.util.FormatUtil;
+import com.actiontech.dble.util.DebugPauseUtil;
 import com.actiontech.dble.util.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * @author mycat
@@ -43,10 +44,10 @@ import java.util.Set;
 public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataResponseHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(MultiNodeQueryHandler.class);
     protected final RouteResultset rrs;
-    private final boolean sessionAutocommit;
+    protected final boolean sessionAutocommit;
     private long affectedRows;
     long selectRows;
-    private List<BackendConnection> errConnection;
+    protected List<BackendConnection> errConnection;
     private long netOutBytes;
     private long resultSize;
     protected boolean prepared;
@@ -54,11 +55,14 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
     protected int fieldCount = 0;
     volatile boolean fieldsReturned;
     private long insertId;
-    private String primaryKeyTable = null;
-    private int primaryKeyIndex = -1;
+    private String cacheKeyTable = null;
+    private int cacheKeyIndex = -1;
     private List<FieldPacket> fieldPackets = new ArrayList<>();
-    private volatile ByteBuffer byteBuffer;
-    private Set<BackendConnection> closedConnSet;
+    protected volatile ByteBuffer byteBuffer;
+    protected Set<BackendConnection> closedConnSet;
+    private final boolean modifiedSQL;
+    protected Set<RouteResultsetNode> connRrns = new ConcurrentSkipListSet<>();
+    private Map<String, Integer> dataNodePauseInfo; // only for debug
 
     public MultiNodeQueryHandler(RouteResultset rrs, NonBlockingSession session) {
         super(session);
@@ -73,10 +77,17 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
             byteBuffer = session.getSource().allocate();
         }
         this.sessionAutocommit = session.getSource().isAutocommit();
+        this.modifiedSQL = rrs.getNodes()[0].isModifySQL();
+        initDebugInfo();
     }
 
-    protected void reset(int initCount) {
-        super.reset(initCount);
+    @Override
+    protected void reset() {
+        super.reset();
+        if (rrs.isLoadData()) {
+            packetId = session.getSource().getLoadDataInfileHandler().getLastPackId();
+        }
+        connRrns.clear();
         this.netOutBytes = 0;
         this.resultSize = 0;
     }
@@ -88,7 +99,7 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
     public void execute() throws Exception {
         lock.lock();
         try {
-            this.reset(rrs.getNodes().length);
+            this.reset();
             this.fieldsReturned = false;
             this.affectedRows = 0L;
             this.insertId = 0L;
@@ -98,6 +109,7 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
         LOGGER.debug("rrs.getRunOnSlave()-" + rrs.getRunOnSlave());
         StringBuilder sb = new StringBuilder();
         for (final RouteResultsetNode node : rrs.getNodes()) {
+            unResponseRrns.add(node);
             if (node.isModifySQL()) {
                 sb.append("[").append(node.getName()).append("]").append(node.getStatement()).append(";\n");
             }
@@ -111,6 +123,7 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
                 node.setRunOnSlave(rrs.getRunOnSlave());
                 innerExecute(conn, node);
             } else {
+                connRrns.add(node);
                 // create new connection
                 node.setRunOnSlave(rrs.getRunOnSlave());
                 PhysicalDBNode dn = DbleServer.getInstance().getConfig().getDataNodes().get(node.getName());
@@ -120,7 +133,7 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
     }
 
     private void innerExecute(BackendConnection conn, RouteResultsetNode node) {
-        if (clearIfSessionClosed(session, this.rrs.getSqlType() != ServerParse.DDL) && this.rrs.getSqlType() != ServerParse.DDL) {
+        if (clearIfSessionClosed(session)) {
             return;
         }
         MySQLConnection mysqlCon = (MySQLConnection) conn;
@@ -131,71 +144,84 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
 
     @Override
     public void connectionClose(BackendConnection conn, String reason) {
+        pauseTime(conn);
         if (checkClosedConn(conn)) {
             return;
         }
-        LOGGER.warn("backend connect" + reason + ", conn info:" + conn);
+        LOGGER.warn("backend connect " + reason + ", conn info:" + conn);
         ErrorPacket errPacket = new ErrorPacket();
-        errPacket.setPacketId(1);
+        byte lastPacketId = packetId;
+        errPacket.setPacketId(++lastPacketId);
         errPacket.setErrNo(ErrorCode.ER_ABORTING_CONNECTION);
         reason = "Connection {DataHost[" + conn.getHost() + ":" + conn.getPort() + "],Schema[" + conn.getSchema() + "],threadID[" +
                 ((MySQLConnection) conn).getThreadId() + "]} was closed ,reason is [" + reason + "]";
         errPacket.setMessage(StringUtil.encode(reason, session.getSource().getCharset().getResults()));
         err = errPacket;
         session.resetMultiStatementStatus();
-        executeError(conn);
+        lock.lock();
+        try {
+            RouteResultsetNode rNode = (RouteResultsetNode) conn.getAttachment();
+            unResponseRrns.remove(rNode);
+            session.getTargetMap().remove(rNode);
+            conn.setResponseHandler(null);
+            executeError(conn);
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
     public void connectionError(Throwable e, BackendConnection conn) {
         LOGGER.warn("Backend connect Error, Connection info:" + conn, e);
         ErrorPacket errPacket = new ErrorPacket();
-        errPacket.setPacketId(1);
+        byte lastPacketId = packetId;
+        errPacket.setPacketId(++lastPacketId);
         errPacket.setErrNo(ErrorCode.ER_DATA_HOST_ABORTING_CONNECTION);
         String errMsg = "Backend connect Error, Connection{DataHost[" + conn.getHost() + ":" + conn.getPort() + "],Schema[" + conn.getSchema() + "]} refused";
         errPacket.setMessage(StringUtil.encode(errMsg, session.getSource().getCharset().getResults()));
         err = errPacket;
         session.resetMultiStatementStatus();
-        executeError(conn);
+        lock.lock();
+        try {
+            errorConnsCnt++;
+            executeError(conn);
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
     public void connectionAcquired(final BackendConnection conn) {
         final RouteResultsetNode node = (RouteResultsetNode) conn.getAttachment();
         session.bindConnection(node, conn);
+        connRrns.remove(node);
         innerExecute(conn, node);
     }
 
     @Override
     public void errorResponse(byte[] data, BackendConnection conn) {
+        pauseTime(conn);
         ErrorPacket errPacket = new ErrorPacket();
         errPacket.read(data);
-        errPacket.setPacketId(1); //just for normal error
+        byte lastPacketId = packetId;
+        errPacket.setPacketId(++lastPacketId); //just for normal error
         err = errPacket;
         session.resetMultiStatementStatus();
         lock.lock();
         try {
             if (!isFail()) {
                 setFail(new String(err.getMessage()));
-                if (errConnection == null) {
-                    errConnection = new ArrayList<>();
-                }
-                errConnection.add(conn);
             }
-            if (!conn.syncAndExecute()) {
-                return;
+            if (errConnection == null) {
+                errConnection = new ArrayList<>();
             }
-            if (--nodeCount == 0) {
-                session.handleSpecial(rrs, false, getDDLErrorInfo());
-
-                if (byteBuffer == null) {
-                    errPacket.setPacketId(1);
-                    handleEndPacket(errPacket.toBytes(), AutoTxOperation.ROLLBACK, conn, false);
-                } else {
+            errConnection.add(conn);
+            if (decrementToZero(conn)) {
+                packetId++;
+                if (byteBuffer != null) {
                     session.getSource().write(byteBuffer);
-                    errPacket.setPacketId(++packetId);
-                    handleEndPacket(errPacket.toBytes(), AutoTxOperation.ROLLBACK, conn, false);
                 }
+                handleEndPacket(errPacket.toBytes(), AutoTxOperation.ROLLBACK, conn, false);
             }
         } finally {
             lock.unlock();
@@ -210,6 +236,7 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
             LOGGER.debug("received ok response ,executeResponse:" + executeResponse + " from " + conn);
         }
         if (executeResponse) {
+            pauseTime(conn);
             this.resultSize += data.length;
             session.setBackendResponseEndTime((MySQLConnection) conn);
             ServerConnection source = session.getSource();
@@ -224,29 +251,20 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
                     affectedRows = ok.getAffectedRows();
                 }
                 if (ok.getInsertId() > 0) {
-                    insertId = (insertId == 0) ? ok.getInsertId() : Math.min(
-                            insertId, ok.getInsertId());
+                    insertId = (insertId == 0) ? ok.getInsertId() : Math.min(insertId, ok.getInsertId());
                 }
-                if (--nodeCount > 0)
+                if (!decrementToZero(conn))
                     return;
                 if (isFail()) {
-                    session.handleSpecial(rrs, false);
                     session.resetMultiStatementStatus();
                     handleEndPacket(err.toBytes(), AutoTxOperation.ROLLBACK, conn, false);
                     return;
                 }
-                boolean metaInited = session.handleSpecial(rrs, true);
-                if (!metaInited) {
-                    executeMetaDataFailed(conn);
-                    return;
-                }
+                ok.setPacketId(++packetId); // OK_PACKET
                 if (rrs.isLoadData()) {
-                    byte lastPackId = source.getLoadDataInfileHandler().getLastPackId();
-                    ok.setPacketId(++lastPackId); // OK_PACKET
                     ok.setMessage(("Records: " + affectedRows + "  Deleted: 0  Skipped: 0  Warnings: 0").getBytes());
                     source.getLoadDataInfileHandler().clear();
                 } else {
-                    ok.setPacketId(++packetId); // OK_PACKET
                     ok.setMessage(null);
                 }
 
@@ -265,16 +283,6 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
         }
     }
 
-    private void executeMetaDataFailed(BackendConnection conn) {
-        ErrorPacket errPacket = new ErrorPacket();
-        errPacket.setPacketId(++packetId);
-        errPacket.setErrNo(ErrorCode.ER_META_DATA);
-        String errMsg = "Create TABLE OK, but generate metedata failed for the current druid parser can not recognize part of the sql";
-        errPacket.setMessage(StringUtil.encode(errMsg, session.getSource().getCharset().getResults()));
-        session.multiStatementPacket(errPacket, packetId);
-        doSqlStat();
-        handleEndPacket(errPacket.toBytes(), AutoTxOperation.COMMIT, conn, false);
-    }
 
     @Override
     public void fieldEofResponse(byte[] header, List<byte[]> fields, List<FieldPacket> fieldPacketsNull, byte[] eof,
@@ -316,6 +324,7 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
         if (errorResponse.get()) {
             return;
         }
+        RouteResultsetNode rNode = (RouteResultsetNode) conn.getAttachment();
         final ServerConnection source = session.getSource();
         if (!rrs.isCallStatement()) {
             if (clearIfSessionClosed(session)) {
@@ -324,8 +333,15 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
                 session.releaseConnectionIfSafe(conn, false);
             }
         }
-
-        if (decrementCountBy(1)) {
+        boolean zeroReached;
+        lock.lock();
+        try {
+            unResponseRrns.remove(rNode);
+            zeroReached = canResponse();
+        } finally {
+            lock.unlock();
+        }
+        if (zeroReached) {
             this.resultSize += eof.length;
             if (!rrs.isCallStatement()) {
                 if (this.sessionAutocommit && !session.getSource().isTxStart() && !session.getSource().isLocked()) { // clear all connections
@@ -337,7 +353,7 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
                     session.resetMultiStatementStatus();
                     source.write(byteBuffer);
                     ErrorPacket errorPacket = createErrPkg(this.error);
-                    handleEndPacket(errorPacket.toBytes(), AutoTxOperation.ROLLBACK, conn, false); //todo :optimized
+                    handleEndPacket(errorPacket.toBytes(), AutoTxOperation.ROLLBACK, conn, false);
                     return;
                 }
             }
@@ -375,30 +391,32 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
             this.resultSize += row.length;
             row[3] = ++packetId;
             RowDataPacket rowDataPkg = null;
-            // cache primaryKey-> dataNode
-            if (primaryKeyIndex != -1) {
+            // cache cacheKey-> dataNode
+            if (cacheKeyIndex != -1) {
                 rowDataPkg = new RowDataPacket(fieldCount);
                 rowDataPkg.read(row);
-                byte[] key = rowDataPkg.fieldValues.get(primaryKeyIndex);
+                byte[] key = rowDataPkg.fieldValues.get(cacheKeyIndex);
                 if (key != null) {
-                    String primaryKey = new String(rowDataPkg.fieldValues.get(primaryKeyIndex));
-                    LayerCachePool pool = DbleServer.getInstance().getRouterService().getTableId2DataNodeCache();
+                    String cacheKey = new String(rowDataPkg.fieldValues.get(cacheKeyIndex));
+                    LayerCachePool pool = CacheService.getTableId2DataNodeCache();
                     if (pool != null) {
-                        pool.putIfAbsent(primaryKeyTable, primaryKey, dataNode);
+                        pool.putIfAbsent(cacheKeyTable, cacheKey, dataNode);
                     }
                 }
             }
-            if (prepared) {
-                if (rowDataPkg == null) {
-                    rowDataPkg = new RowDataPacket(fieldCount);
-                    rowDataPkg.read(row);
+            if (!errorResponse.get()) {
+                if (prepared) {
+                    if (rowDataPkg == null) {
+                        rowDataPkg = new RowDataPacket(fieldCount);
+                        rowDataPkg.read(row);
+                    }
+                    BinaryRowDataPacket binRowDataPk = new BinaryRowDataPacket();
+                    binRowDataPk.read(fieldPackets, rowDataPkg);
+                    binRowDataPk.setPacketId(rowDataPkg.getPacketId());
+                    byteBuffer = binRowDataPk.write(byteBuffer, session.getSource(), true);
+                } else {
+                    byteBuffer = session.getSource().writeToBuffer(row, byteBuffer);
                 }
-                BinaryRowDataPacket binRowDataPk = new BinaryRowDataPacket();
-                binRowDataPk.read(fieldPackets, rowDataPkg);
-                binRowDataPk.setPacketId(rowDataPkg.getPacketId());
-                byteBuffer = binRowDataPk.write(byteBuffer, session.getSource(), true);
-            } else {
-                byteBuffer = session.getSource().writeToBuffer(row, byteBuffer);
             }
         } catch (Exception e) {
             handleDataProcessException(e);
@@ -424,45 +442,26 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
         LoadDataUtil.requestFileDataResponse(data, conn);
     }
 
-    private String getDDLErrorInfo() {
-        if (rrs.getSqlType() != ServerParse.DDL || errConnection == null) {
-            return "";
-        }
-
-        StringBuilder s = new StringBuilder();
-        s.append("{");
-        for (int i = 0; i < errConnection.size(); i++) {
-            BackendConnection conn = errConnection.get(i);
-            s.append("\n ").append(FormatUtil.format(i + 1, 3));
-            s.append(" -> ").append(conn.compactInfo());
-        }
-        s.append("\n}");
-
-        return s.toString();
-    }
 
     private void executeError(BackendConnection conn) {
-        lock.lock();
-        try {
-            if (!isFail()) {
-                setFail(new String(err.getMessage()));
+        if (!isFail()) {
+            setFail(new String(err.getMessage()));
+        }
+        if (errConnection == null) {
+            errConnection = new ArrayList<>();
+        }
+        errConnection.add(conn);
+        if (conn.isClosed() && (!session.getSource().isAutocommit() || session.getSource().isTxStart())) {
+            session.getSource().setTxInterrupt(error);
+        }
+        if (canResponse()) {
+            packetId++;
+            if (byteBuffer == null) {
+                handleEndPacket(err.toBytes(), AutoTxOperation.ROLLBACK, conn, false);
+            } else {
+                session.getSource().write(byteBuffer);
+                handleEndPacket(err.toBytes(), AutoTxOperation.ROLLBACK, conn, false);
             }
-            if (errConnection == null) {
-                errConnection = new ArrayList<>();
-            }
-            errConnection.add(conn);
-            if (--nodeCount == 0) {
-                session.handleSpecial(rrs, false);
-                if (byteBuffer == null) {
-                    handleEndPacket(err.toBytes(), AutoTxOperation.ROLLBACK, conn, false);
-                } else {
-                    session.getSource().write(byteBuffer);
-                    err.setPacketId(++packetId);
-                    handleEndPacket(err.toBytes(), AutoTxOperation.ROLLBACK, conn, false);
-                }
-            }
-        } finally {
-            lock.unlock();
         }
     }
 
@@ -499,40 +498,42 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
         fieldCount = fields.size();
         header[3] = ++packetId;
         byteBuffer = source.writeToBuffer(header, byteBuffer);
-        String primaryKey = null;
-        if (rrs.hasPrimaryKeyToCache()) {
-            String[] items = rrs.getPrimaryKeyItems();
-            primaryKeyTable = items[0];
-            primaryKey = items[1];
+        String cacheKey = null;
+        if (rrs.hasCacheKeyToCache()) {
+            String[] items = rrs.getCacheKeyItems();
+            cacheKeyTable = items[0];
+            cacheKey = items[1];
         }
 
-        for (int i = 0, len = fieldCount; i < len; ++i) {
-            byte[] field = fields.get(i);
-            FieldPacket fieldPkg = new FieldPacket();
-            fieldPkg.read(field);
-            if (rrs.getSchema() != null) {
-                fieldPkg.setDb(rrs.getSchema().getBytes());
-            }
-            if (rrs.getTableAlias() != null) {
-                fieldPkg.setTable(rrs.getTableAlias().getBytes());
-            }
-            if (rrs.getTable() != null) {
-                fieldPkg.setOrgTable(rrs.getTable().getBytes());
-            }
-            fieldPackets.add(fieldPkg);
-            fieldCount = fields.size();
-            if (primaryKey != null && primaryKeyIndex == -1) {
-                // find primary key index
-                String fieldName = new String(fieldPkg.getName());
-                if (primaryKey.equalsIgnoreCase(fieldName)) {
-                    primaryKeyIndex = i;
+        if (!errorResponse.get()) {
+            for (int i = 0, len = fieldCount; i < len; ++i) {
+                byte[] field = fields.get(i);
+                FieldPacket fieldPkg = new FieldPacket();
+                fieldPkg.read(field);
+                if (rrs.getSchema() != null) {
+                    fieldPkg.setDb(rrs.getSchema().getBytes());
                 }
+                if (rrs.getTableAlias() != null) {
+                    fieldPkg.setTable(rrs.getTableAlias().getBytes());
+                }
+                if (rrs.getTable() != null) {
+                    fieldPkg.setOrgTable(rrs.getTable().getBytes());
+                }
+                fieldPackets.add(fieldPkg);
+                fieldCount = fields.size();
+                if (cacheKey != null && cacheKeyIndex == -1) {
+                    // find primary key index
+                    String fieldName = new String(fieldPkg.getName());
+                    if (cacheKey.equalsIgnoreCase(fieldName)) {
+                        cacheKeyIndex = i;
+                    }
+                }
+                fieldPkg.setPacketId(++packetId);
+                byteBuffer = fieldPkg.write(byteBuffer, source, false);
             }
-            fieldPkg.setPacketId(++packetId);
-            byteBuffer = fieldPkg.write(byteBuffer, source, false);
+            eof[3] = ++packetId;
+            byteBuffer = source.writeToBuffer(eof, byteBuffer);
         }
-        eof[3] = ++packetId;
-        byteBuffer = source.writeToBuffer(eof, byteBuffer);
     }
 
 
@@ -570,15 +571,10 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
 
     void handleEndPacket(byte[] data, AutoTxOperation txOperation, BackendConnection conn, boolean isSuccess) {
         ServerConnection source = session.getSource();
-        if (source.isAutocommit() && !source.isTxStart() && conn.isModifiedSQLExecuted()) {
-            if (nodeCount < 0) {
-                return;
-            }
+        if (source.isAutocommit() && !source.isTxStart() && this.modifiedSQL) {
             //Implicit Distributed Transaction,send commit or rollback automatically
             if (txOperation == AutoTxOperation.COMMIT) {
-                if (!conn.isDDL()) {
-                    session.checkBackupStatus();
-                }
+                session.checkBackupStatus();
                 session.setBeginCommitTime();
                 if (session.getXaState() == null) {
                     NormalAutoCommitNodesHandler autoHandler = new NormalAutoCommitNodesHandler(session, data);
@@ -599,19 +595,71 @@ public class MultiNodeQueryHandler extends MultiNodeHandler implements LoadDataR
         } else {
             boolean inTransaction = !source.isAutocommit() || source.isTxStart();
             if (!inTransaction) {
-                for (BackendConnection errConn : errConnection) {
-                    session.releaseConnection(errConn);
+                if (errConnection != null) {
+                    for (BackendConnection errConn : errConnection) {
+                        session.releaseConnection(errConn);
+                    }
                 }
             }
 
-            if (nodeCount == 0) {
-                // Explicit Distributed Transaction
-                if (inTransaction && (AutoTxOperation.ROLLBACK == txOperation)) {
-                    source.setTxInterrupt("ROLLBACK");
-                }
-                session.setResponseTime(isSuccess);
-                session.getSource().write(data);
+            // Explicit Distributed Transaction
+            if (inTransaction && (AutoTxOperation.ROLLBACK == txOperation)) {
+                source.setTxInterrupt("ROLLBACK");
             }
+            session.setResponseTime(isSuccess);
+            session.getSource().write(data);
+            session.multiStatementNextSql(session.getIsMultiStatement().get());
+        }
+    }
+
+    public void waitAllConnConnectorError() {
+        while (connRrns.size() - 1 != errorConnsCnt) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
+        }
+    }
+
+    private void initDebugInfo() {
+        if (LOGGER.isDebugEnabled()) {
+            String info = DebugPauseUtil.getPauseInfo("MultiNodeQueryHandler.txt");
+            if (info != null) {
+                LOGGER.debug("Pause info of MultiNodeQueryHandler is " + info);
+                String[] infos = info.split(";");
+                dataNodePauseInfo = new HashMap<>(infos.length);
+                boolean formatCorrect = true;
+                for (String nodeInfo : infos) {
+                    try {
+                        String[] infoDetail = nodeInfo.split(":");
+                        dataNodePauseInfo.put(infoDetail[0], Integer.valueOf(infoDetail[1]));
+                    } catch (Throwable e) {
+                        formatCorrect = false;
+                        break;
+                    }
+                }
+                if (!formatCorrect) {
+                    dataNodePauseInfo.clear();
+                }
+            } else {
+                dataNodePauseInfo = new HashMap<>(0);
+            }
+        } else {
+            dataNodePauseInfo = new HashMap<>(0);
+        }
+    }
+
+    private void pauseTime(BackendConnection conn) {
+        if (LOGGER.isDebugEnabled()) {
+            RouteResultsetNode rNode = (RouteResultsetNode) conn.getAttachment();
+            Integer millis = dataNodePauseInfo.get(rNode.getName());
+            if (millis == null) {
+                return;
+            }
+            LOGGER.debug("datanode[" + rNode.getName() + "], which conn threadid[" + ((MySQLConnection) conn).getThreadId() + "] will sleep for " + millis + " milliseconds");
+            try {
+                Thread.sleep(millis);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            LOGGER.debug("datanode[" + rNode.getName() + "], which conn threadid[" + ((MySQLConnection) conn).getThreadId() + "] has slept for " + millis + " milliseconds");
         }
     }
 }

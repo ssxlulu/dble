@@ -44,6 +44,8 @@ public class ServerQueryHandler implements FrontendQueryHandler {
             LOGGER.debug(String.valueOf(c) + sql);
         }
 
+        source.getSession2().queryCount();
+
         if (source.getSession2().getRemingSql() != null) {
             sql = source.getSession2().getRemingSql();
         }
@@ -67,6 +69,9 @@ public class ServerQueryHandler implements FrontendQueryHandler {
             }
             c.execute(sql, rs & 0xff);
         } else {
+            if (sqlType != ServerParse.START && sqlType != ServerParse.BEGIN) {
+                source.getSession2().singleTransactionsCount();
+            }
             switch (sqlType) {
                 //explain sql
                 case ServerParse.EXPLAIN:
@@ -95,7 +100,13 @@ public class ServerQueryHandler implements FrontendQueryHandler {
                     BeginHandler.handle(sql, c);
                     break;
                 case ServerParse.SAVEPOINT:
-                    SavepointHandler.handle(sql, c);
+                    SavepointHandler.save(sql, c);
+                    break;
+                case ServerParse.ROLLBACK_SAVEPOINT:
+                    SavepointHandler.rollback(sql, c);
+                    break;
+                case ServerParse.RELEASE_SAVEPOINT:
+                    SavepointHandler.release(sql, c);
                     break;
                 case ServerParse.KILL:
                     KillHandler.handle(sql, rs >>> 8, c);
@@ -140,16 +151,16 @@ public class ServerQueryHandler implements FrontendQueryHandler {
                     c.unLockTable(sql);
                     break;
                 case ServerParse.CREATE_VIEW:
-                    CreateViewHandler.handle(sql, c, false);
-                    break;
                 case ServerParse.REPLACE_VIEW:
-                    CreateViewHandler.handle(sql, c, true);
-                    break;
                 case ServerParse.ALTER_VIEW:
-                    CreateViewHandler.handle(sql, c, false);
-                    break;
                 case ServerParse.DROP_VIEW:
-                    DropViewHandler.handle(sql, c);
+                    ViewHandler.handle(sqlType, sql, c);
+                    break;
+                case ServerParse.CREATE_DATABASE:
+                    CreateDatabaseHandler.handle(sql, c);
+                    break;
+                case ServerParse.FLUSH:
+                    FlushTableHandler.handle(sql, c);
                     break;
                 case ServerParse.UNSUPPORT:
                     LOGGER.info("Unsupported statement:" + sql);

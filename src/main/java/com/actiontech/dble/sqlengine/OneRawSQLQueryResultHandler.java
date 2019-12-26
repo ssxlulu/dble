@@ -17,9 +17,9 @@ import java.util.Map;
 public class OneRawSQLQueryResultHandler implements SQLJobHandler {
 
     public static final Logger LOGGER = LoggerFactory.getLogger(OneRawSQLQueryResultHandler.class);
-    private Map<String, Integer> fetchColPosMap;
     private final SQLQueryResultListener<SQLQueryResult<Map<String, String>>> callback;
     private final String[] fetchCols;
+    private Map<String, Integer> fetchColPosMap;
     private int fieldCount = 0;
     private Map<String, String> result = new HashMap<>();
 
@@ -32,6 +32,7 @@ public class OneRawSQLQueryResultHandler implements SQLJobHandler {
 
     @Override
     public void onHeader(List<byte[]> fields) {
+        result.clear();
         fieldCount = fields.size();
         fetchColPosMap = new HashMap<>();
         for (String watchFd : fetchCols) {
@@ -49,7 +50,7 @@ public class OneRawSQLQueryResultHandler implements SQLJobHandler {
     }
 
     @Override
-    public boolean onRowData(byte[] rowData) {
+    public void onRowData(byte[] rowData) {
         RowDataPacket rowDataPkg = new RowDataPacket(fieldCount);
         rowDataPkg.read(rowData);
         String variableName = "";
@@ -68,30 +69,25 @@ public class OneRawSQLQueryResultHandler implements SQLJobHandler {
             }
             result.put(variableName, variableValue);
         } else {
-            for (String fetchCol : fetchCols) {
-                Integer ind = fetchColPosMap.get(fetchCol);
+            for (Map.Entry<String, Integer> entry : fetchColPosMap.entrySet()) {
+                Integer ind = entry.getValue();
                 if (ind != null) {
                     byte[] columnData = rowDataPkg.fieldValues.get(ind);
                     String columnVal = columnData != null ? new String(columnData) : null;
-                    result.put(fetchCol, columnVal);
-                } else {
-                    LOGGER.info("cant't find column in sql query result " + fetchCol);
+                    result.put(entry.getKey(), columnVal);
                 }
             }
         }
-        return false;
     }
 
     @Override
     public void finished(String dataNode, boolean failed) {
         SQLQueryResult<Map<String, String>> queryResult = new SQLQueryResult<>(this.result, !failed, dataNode);
         this.callback.onResult(queryResult);
-
     }
+
     //  MultiRowSQLQueryResultHandler need
     protected Map<String, String> getResult() {
-        Map<String, String> newResult = new HashMap<>();
-        newResult.putAll(result);
-        return newResult;
+        return new HashMap<>(result);
     }
 }

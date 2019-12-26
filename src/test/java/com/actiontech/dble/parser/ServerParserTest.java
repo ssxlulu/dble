@@ -60,6 +60,17 @@ public class ServerParserTest {
     }
 
     @Test
+    public void testDoubleDashComment() {
+        Assert.assertEquals(ServerParse.MYSQL_COMMENT, ServerParse.parse("--     "));
+        Assert.assertEquals(ServerParse.MYSQL_COMMENT, ServerParse.parse("--\t    "));
+        Assert.assertEquals(ServerParse.OTHER, ServerParse.parse("- \n"));
+        Assert.assertEquals(ServerParse.MYSQL_COMMENT, ServerParse.parse("--         select * from test"));
+        Assert.assertEquals(ServerParse.INSERT, ServerParse.parse("-- select *\n-- fdfadsfad\ninsert into test values(1)"));
+        Assert.assertEquals(ServerParse.INSERT, ServerParse.parse("--\tselect *\n-- fdfadsfad\ninsert into test values(1)"));
+        Assert.assertEquals(ServerParse.OTHER, ServerParse.parse("-- select *\nfdfadsfad\ninsert into test values(1)"));
+    }
+
+    @Test
     public void testIsDelete() {
         Assert.assertEquals(ServerParse.DELETE, ServerParse.parse("delete ..."));
         Assert.assertEquals(ServerParse.DELETE, ServerParse.parse("DELETE ..."));
@@ -170,6 +181,7 @@ public class ServerParserTest {
         Assert.assertEquals(ServerParseStart.TRANSACTION, ServerParseStart.parse(" start transaction  ...", 6));
         Assert.assertEquals(ServerParseStart.TRANSACTION, ServerParseStart.parse("START TRANSACTION", 5));
         Assert.assertEquals(ServerParseStart.TRANSACTION, ServerParseStart.parse(" staRT   TRANSaction  ", 6));
+        Assert.assertEquals(ServerParseStart.TRANSACTION, ServerParseStart.parse(" start transaction /*!adfadfasdf*/  ", 6));
     }
 
     @Test
@@ -191,7 +203,7 @@ public class ServerParserTest {
     @Test
     public void testIsSelectDatabase() {
         Assert.assertEquals(ServerParseSelect.DATABASE, ServerParseSelect.parse(" select database()  ", 7));
-        Assert.assertEquals(ServerParseSelect.DATABASE, ServerParseSelect.parse("SELECT DATABASE()", 6));
+        Assert.assertEquals(ServerParseSelect.DATABASE, ServerParseSelect.parse("SELECT DATABASE()", 7));
         Assert.assertEquals(ServerParseSelect.DATABASE, ServerParseSelect.parse(" selECT    DATABASE()  ", 7));
     }
 
@@ -200,6 +212,13 @@ public class ServerParserTest {
         Assert.assertEquals(ServerParseSelect.USER, ServerParseSelect.parse(" select user()  ", 7));
         Assert.assertEquals(ServerParseSelect.USER, ServerParseSelect.parse("SELECT USER()", 6));
         Assert.assertEquals(ServerParseSelect.USER, ServerParseSelect.parse(" selECT    USER()  ", 7));
+    }
+
+    @Test
+    public void testIsSelectCurrentUser() {
+        Assert.assertEquals(ServerParseSelect.CURRENT_USER, ServerParseSelect.parse(" select current_user()  ", 7));
+        Assert.assertEquals(ServerParseSelect.CURRENT_USER, ServerParseSelect.parse("SELECT CURRENT_USER()", 6));
+        Assert.assertEquals(ServerParseSelect.CURRENT_USER, ServerParseSelect.parse(" selECT    current_USER()  ", 7));
     }
 
     @Test
@@ -355,7 +374,7 @@ public class ServerParserTest {
 
 
     @Test
-    public void testCreateView(){
+    public void testCreateView() {
         Assert.assertEquals(ServerParse.CREATE_VIEW, ServerParse.parse("create view asdfasdf as asdfasdfasdfsdf"));
         Assert.assertEquals(ServerParse.ALTER_VIEW, ServerParse.parse("ALTER view x_xx_xx as select * from suntest"));
         Assert.assertEquals(ServerParse.REPLACE_VIEW, ServerParse.parse("create or replace  view x_xx_xx as select * from suntest"));
@@ -365,7 +384,7 @@ public class ServerParserTest {
     }
 
     @Test
-    public void testDropPrepare(){
+    public void testDropPrepare() {
         Assert.assertEquals(ServerParse.SCRIPT_PREPARE, ServerParse.parse("DROP PREPARE stmt_name"));
     }
 }

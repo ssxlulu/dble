@@ -11,6 +11,7 @@ import com.actiontech.dble.backend.mysql.nio.MySQLConnection;
 import com.actiontech.dble.backend.mysql.xa.TxState;
 import com.actiontech.dble.buffer.BufferPool;
 import com.actiontech.dble.server.ServerConnection;
+import com.actiontech.dble.singleton.XASessionCheck;
 import com.actiontech.dble.statistic.CommandCount;
 import com.actiontech.dble.util.TimeUtil;
 import org.slf4j.Logger;
@@ -66,8 +67,8 @@ public final class NIOProcessor {
             total += frontend.getWriteQueue().size();
         }
         for (BackendConnection back : backends.values()) {
-            if (back instanceof BackendAIOConnection) {
-                total += ((BackendAIOConnection) back).getWriteQueue().size();
+            if (back instanceof MySQLConnection) {
+                total += ((MySQLConnection) back).getWriteQueue().size();
             }
         }
         return total;
@@ -149,7 +150,7 @@ public final class NIOProcessor {
                         if (state != TxState.TX_COMMIT_FAILED_STATE && state != TxState.TX_ROLLBACK_FAILED_STATE) {
                             // Active/IDLE/PREPARED XA FrontendS will be rollbacked
                             s.close("Idle Timeout");
-                            DbleServer.getInstance().getXaSessionCheck().addRollbackSession(s.getSession2());
+                            XASessionCheck.getInstance().addRollbackSession(s.getSession2());
                         }
                         continue;
                     }
@@ -180,7 +181,7 @@ public final class NIOProcessor {
             //Active/IDLE/PREPARED XA backends will not be checked
             if (c instanceof MySQLConnection) {
                 MySQLConnection m = (MySQLConnection) c;
-                if (m.isClosedOrQuit()) {
+                if (m.isClosed()) {
                     it.remove();
                     continue;
                 }
@@ -189,7 +190,7 @@ public final class NIOProcessor {
                 }
             }
             // close the conn which executeTimeOut
-            if (!c.isDDL() && c.isBorrowed() && c.getLastTime() < TimeUtil.currentTimeMillis() - sqlTimeout) {
+            if (!c.isDDL() && c.isBorrowed() && c.isExecuting() && c.getLastTime() < TimeUtil.currentTimeMillis() - sqlTimeout) {
                 LOGGER.info("found backend connection SQL timeout ,close it " + c);
                 c.close("sql timeout");
             }

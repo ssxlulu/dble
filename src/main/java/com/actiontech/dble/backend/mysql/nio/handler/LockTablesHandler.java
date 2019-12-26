@@ -8,7 +8,6 @@ package com.actiontech.dble.backend.mysql.nio.handler;
 import com.actiontech.dble.DbleServer;
 import com.actiontech.dble.backend.BackendConnection;
 import com.actiontech.dble.backend.datasource.PhysicalDBNode;
-import com.actiontech.dble.backend.mysql.nio.MySQLConnection;
 import com.actiontech.dble.net.mysql.ErrorPacket;
 import com.actiontech.dble.net.mysql.FieldPacket;
 import com.actiontech.dble.net.mysql.OkPacket;
@@ -20,6 +19,7 @@ import com.actiontech.dble.server.parser.ServerParse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -37,11 +37,12 @@ public class LockTablesHandler extends MultiNodeHandler {
     public LockTablesHandler(NonBlockingSession session, RouteResultset rrs) {
         super(session);
         this.rrs = rrs;
+        unResponseRrns.addAll(Arrays.asList(rrs.getNodes()));
         this.autocommit = session.getSource().isAutocommit();
     }
 
     public void execute() throws Exception {
-        super.reset(this.rrs.getNodes().length);
+        super.reset();
         for (final RouteResultsetNode node : rrs.getNodes()) {
             BackendConnection conn = session.getTarget(node);
             if (session.tryExistsCon(conn, node)) {
@@ -76,8 +77,9 @@ public class LockTablesHandler extends MultiNodeHandler {
         if (executeResponse) {
             session.releaseConnectionIfSafe(conn, false);
         } else {
-            ((MySQLConnection) conn).quit();
-            session.getTargetMap().remove(conn.getAttachment());
+            conn.closeWithoutRsp("unfinished sync");
+            RouteResultsetNode rNode = (RouteResultsetNode) conn.getAttachment();
+            session.getTargetMap().remove(rNode);
         }
         ErrorPacket errPacket = new ErrorPacket();
         errPacket.read(err);
@@ -86,7 +88,7 @@ public class LockTablesHandler extends MultiNodeHandler {
             setFail(errMsg);
         }
         LOGGER.info("error response from " + conn + " err " + errMsg + " code:" + errPacket.getErrNo());
-        this.tryErrorFinished(this.decrementCountBy(1));
+        this.tryErrorFinished(this.decrementToZero(conn));
     }
 
     @Override
@@ -96,7 +98,7 @@ public class LockTablesHandler extends MultiNodeHandler {
             if (clearIfSessionClosed(session)) {
                 return;
             }
-            boolean isEndPack = decrementCountBy(1);
+            boolean isEndPack = decrementToZero(conn);
             final RouteResultsetNode node = (RouteResultsetNode) conn.getAttachment();
             if (node.getSqlType() == ServerParse.UNLOCK) {
                 session.releaseConnection(conn);
@@ -121,14 +123,6 @@ public class LockTablesHandler extends MultiNodeHandler {
                 session.multiStatementNextSql(multiStatementFlag);
             }
         }
-    }
-
-    protected String byte2Str(byte[] data) {
-        StringBuilder sb = new StringBuilder();
-        for (byte b : data) {
-            sb.append(Byte.toString(b));
-        }
-        return sb.toString();
     }
 
     @Override

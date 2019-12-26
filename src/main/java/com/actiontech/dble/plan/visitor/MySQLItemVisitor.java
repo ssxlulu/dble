@@ -45,12 +45,10 @@ import com.actiontech.dble.plan.common.item.subquery.ItemScalarSubQuery;
 import com.actiontech.dble.util.StringUtil;
 import com.alibaba.druid.sql.ast.*;
 import com.alibaba.druid.sql.ast.expr.*;
-import com.alibaba.druid.sql.ast.statement.SQLCharacterDataType;
-import com.alibaba.druid.sql.ast.statement.SQLSelectOrderByItem;
-import com.alibaba.druid.sql.ast.statement.SQLSelectQuery;
-import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
+import com.alibaba.druid.sql.ast.statement.*;
 import com.alibaba.druid.sql.dialect.mysql.ast.expr.MySqlCharExpr;
 import com.alibaba.druid.sql.dialect.mysql.ast.expr.MySqlExtractExpr;
+import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlSelectQueryBlock;
 import com.alibaba.druid.sql.dialect.mysql.visitor.MySqlASTVisitorAdapter;
 import com.alibaba.druid.sql.dialect.mysql.visitor.MySqlOutputVisitor;
 import com.alibaba.druid.sql.parser.SQLExprParser;
@@ -448,7 +446,9 @@ public class MySQLItemVisitor extends MySqlASTVisitorAdapter {
     public void endVisit(SQLNumberExpr x) {
         Number number = x.getNumber();
         if (number instanceof BigDecimal) {
-            item = new ItemFloat((BigDecimal) number);
+            item = new ItemDecimal((BigDecimal) number);
+        } else if (number instanceof Float) {
+            item = new ItemFloat(new BigDecimal(Float.toString((Float) number)));
         } else {
             item = new ItemInt(number.longValue());
         }
@@ -609,11 +609,11 @@ public class MySQLItemVisitor extends MySqlASTVisitorAdapter {
                 break;
             case "TIMESTAMPADD":
                 SQLIdentifierExpr addUnit = (SQLIdentifierExpr) x.getParameters().get(0);
-                item = new ItemDateAddInterval(args.get(2), args.get(1), SQLIntervalUnit.valueOf(addUnit.getSimpleName()), false);
+                item = new ItemDateAddInterval(args.get(2), args.get(1), SQLIntervalUnit.valueOf(addUnit.getSimpleName().toUpperCase()), false);
                 break;
             case "TIMESTAMPDIFF":
                 SQLIdentifierExpr diffUnit = (SQLIdentifierExpr) x.getParameters().get(0);
-                item = new ItemFuncTimestampDiff(args.get(1), args.get(2), SQLIntervalUnit.valueOf(diffUnit.getSimpleName()));
+                item = new ItemFuncTimestampDiff(args.get(1), args.get(2), SQLIntervalUnit.valueOf(diffUnit.getSimpleName().toUpperCase()));
                 break;
             case "VAR_SAMP":
                 item = new ItemSumVariance(args, 1, false, null);
@@ -655,9 +655,18 @@ public class MySQLItemVisitor extends MySqlASTVisitorAdapter {
             default:
                 if (ItemCreate.getInstance().isNativeFunc(funcName)) {
                     item = ItemCreate.getInstance().createNativeFunc(funcName, args);
+                } else if (ItemCreate.getInstance().isInnerFunc(funcName)) {
+                    item = ItemCreate.getInstance().createInnerFunc(funcName, args);
                 } else {
                     // unKnownFunction
                     item = new ItemFuncUnknown(funcName, args);
+                    if (x.getParent() instanceof SQLSelectItem) {
+                        if (x.getParent().getParent() instanceof MySqlSelectQueryBlock) {
+                            if (((MySqlSelectQueryBlock) x.getParent().getParent()).getFrom() != null) {
+                                throw new MySQLOutPutException(ErrorCode.ER_OPTIMIZER, "", "Unknown function " + funcName);
+                            }
+                        }
+                    }
                 }
                 initName(x);
         }

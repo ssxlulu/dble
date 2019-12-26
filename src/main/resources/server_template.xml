@@ -13,15 +13,15 @@
 	License for the specific language governing permissions and - limitations 
 	under the License. -->
 <!DOCTYPE dble:server SYSTEM "server.dtd">
-<dble:server xmlns:dble="http://dble.cloud/" version="2.19.03.0">
+<dble:server xmlns:dble="http://dble.cloud/" version="1.0">
     <system>
         <!-- base config -->
         <!--<property name="bindIp">0.0.0.0</property>-->
-        <!-- property name="serverPort">8066</property> -->
+        <!--<property name="serverPort">8066</property> -->
         <!--<property name="managerPort">9066</property> -->
-        <!--<property name="maxCon">1024</property> -->
-        <!-- <property name="processors">4</property>-->
-        <!-- <property name="backendProcessors">12</property>-->
+        <!--<property name="maxCon">0</property> -->
+        <!--<property name="processors">4</property>-->
+        <!--<property name="backendProcessors">12</property>-->
         <!--<property name="processorExecutor">4</property> -->
         <!--<property name="backendProcessorExecutor">12</property> -->
         <!--<property name="complexExecutor">8</property> -->
@@ -47,10 +47,10 @@
         <!--<property name="costSamplePercent">1</property>-->
 
         <!--connection -->
-        <!--<property name="charset">utf8</property>-->
-        <!--<property name="maxPacketSize">16777216</property>-->
+        <!--<property name="charset">utf8mb4</property>-->
+        <!--<property name="maxPacketSize">4194304</property>-->
         <!--<property name="txIsolation">3</property>-->
-
+        <!--<property name="autocommit">1</property>-->
         <!--consistency-->
         <!-- check the consistency of table structure between nodes,default not -->
         <property name="checkTableConsistency">0</property>
@@ -70,11 +70,11 @@
         <property name="idleTimeout">1800000</property><!-- unit millisecond -->
 
         <!-- transaction log -->
-        <!-- 1 enable record the transaction log, 0 disable -->
+        <!-- 1 enable record the transaction log, 0 disable ,the unit of transactionRatateSize is M -->
         <property name="recordTxn">0</property>
         <!--<property name="transactionLogBaseDir">/txlogs</property>-->
         <!--<property name="transactionLogBaseName">server-tx</property>-->
-        <!--<property name="transactionRatateSize">16</property>--><!-- unit M -->
+        <!--<property name="transactionRatateSize">16</property>-->
 
         <!-- XA transaction -->
         <!-- use XA transaction ,if the mysql service crash,the unfinished XA commit/rollback will retry for several times
@@ -86,6 +86,9 @@
         <!--<property name="xaRecoveryLogBaseDir">/tmlogs/</property>-->
         <!-- XA Recovery Log name -->
         <!--<property name="xaRecoveryLogBaseName">tmlog</property>-->
+        <!-- XA Retry count, retry times in backend, 0 means always retry until success -->
+        <!--<property name="xaRetryCount">0</property>-->
+
 
         <!-- true is use JoinStrategy, default false-->
         <property name="useJoinStrategy">true</property>
@@ -99,7 +102,7 @@
 
         <!-- off Heap unit:bytes-->
         <property name="bufferPoolChunkSize">4096</property>
-        <property name="bufferPoolPageNumber">512</property>
+        <property name="bufferPoolPageNumber">256</property>
         <property name="bufferPoolPageSize">2097152</property>
         <!--<property name="mappedFileSize">2097152</property>-->
 
@@ -138,6 +141,13 @@
         <!-- the threshold for judging if the query is slow , unit is millisecond -->
         <property name="sqlSlowTime">100</property>
 
+        <!-- used for load data,maxCharsPerColumn means max chars length for per column when load data  -->
+        <!--<property name="maxCharsPerColumn">65535</property>-->
+        <!-- used for load data, because dble need save to disk if loading file contains large size -->
+        <!--<property name="maxRowSizeToFile">10000</property>-->
+
+        <!-- used for outerHa ,when the value is true ,one dataHost can only has one writeHost,and dataHost commands would be available-->
+        <!--<property name="useOuterHa">true</property>-->
 
     </system>
 
@@ -161,11 +171,11 @@
 
     <user name="root">
         <property name="password">123456</property>
-        <property name="schemas">TESTDB</property>
+        <property name="schemas">testdb,testdb2</property>
 
         <!-- table's DML privileges  INSERT/UPDATE/SELECT/DELETE -->
         <!--
-        <privileges check="false">
+        <privileges check="true">
             <schema name="TESTDB" dml="0110" >
                 <table name="tb01" dml="0000"></table>
                 <table name="tb02" dml="1111"></table>
@@ -175,18 +185,12 @@
     </user>
 
     <user name="user">
-        <property name="password">user</property>
-        <property name="schemas">TESTDB</property>
+        <property name="password">AqEkFEuIFAX6g2TJQnp4cJ2r7Yc0Z4/KBsZqKhT8qSz18Aj91e8lxO49BKQElC6OFfW4c38pCYa8QGFTub7pnw==</property><!--123456-->
+        <property name="usingDecrypt">1</property>
+        <property name="schemas">testdb</property>
         <property name="readOnly">true</property>
+        <property name="maxCon">100</property>
     </user>
 
-    <!--<alarm>
-        <url>10.186.22.103</url>
-        <port>5700</port>
-        <level>warn</level>
-        <serverId>dbleServer</serverId>
-        <componentId>componentId</componentId>
-        <componentType>componentType</componentType>
-    </alarm>-->
 
 </dble:server>

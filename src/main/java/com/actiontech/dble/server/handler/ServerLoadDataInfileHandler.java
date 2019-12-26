@@ -12,6 +12,8 @@ import com.actiontech.dble.config.ErrorCode;
 import com.actiontech.dble.config.model.SchemaConfig;
 import com.actiontech.dble.config.model.SystemConfig;
 import com.actiontech.dble.config.model.TableConfig;
+import com.actiontech.dble.singleton.CacheService;
+import com.actiontech.dble.singleton.ProxyMeta;
 import com.actiontech.dble.meta.protocol.StructureMeta;
 import com.actiontech.dble.net.handler.LoadDataInfileHandler;
 import com.actiontech.dble.net.mysql.BinaryPacket;
@@ -25,10 +27,12 @@ import com.actiontech.dble.route.util.RouterUtil;
 import com.actiontech.dble.server.ServerConnection;
 import com.actiontech.dble.server.parser.ServerParse;
 import com.actiontech.dble.server.util.SchemaUtil;
+import com.actiontech.dble.singleton.SequenceManager;
 import com.actiontech.dble.sqlengine.mpp.LoadData;
 import com.actiontech.dble.util.ObjectUtil;
 import com.actiontech.dble.util.SqlStringUtil;
 import com.actiontech.dble.util.StringUtil;
+import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.expr.*;
 import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlLoadDataInFileStatement;
@@ -76,6 +80,8 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
     private String tableName;
     private TableConfig tableConfig;
     private int partitionColumnIndex = -1;
+    private int autoIncrementIndex = -1;
+    private boolean appendAutoIncrementColumn = false;
     private LayerCachePool tableId2DataNodeCache;
     private boolean isStartLoadData = false;
 
@@ -117,7 +123,7 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
         loadData.setFieldTerminatedBy(fieldTerminatedBy);
 
         SQLTextLiteralExpr rawEnclosed = (SQLTextLiteralExpr) statement.getColumnsEnclosedBy();
-        String enclose = rawEnclosed == null ? null : rawEnclosed.getText();
+        String enclose = ((rawEnclosed == null) || rawEnclosed.getText().isEmpty()) ? null : rawEnclosed.getText();
         loadData.setEnclose(enclose);
 
         SQLTextLiteralExpr escapedExpr = (SQLTextLiteralExpr) statement.getColumnsEscaped();
@@ -156,7 +162,7 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
         }
 
         tableConfig = schema.getTables().get(tableName);
-        if (!DbleServer.getInstance().getTmManager().checkTableExists(schema.getName(), tableName)) {
+        if (!ProxyMeta.getInstance().getTmManager().checkTableExists(schema.getName(), tableName)) {
             String msg = "Table '" + schema.getName() + "." + tableName + "' or table mata doesn't exist";
             clear();
             serverConnection.writeErrMessage("42S02", msg, ErrorCode.ER_NO_SUCH_TABLE);
@@ -170,13 +176,24 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
             return;
         }
 
-        tableId2DataNodeCache = (LayerCachePool) DbleServer.getInstance().getCacheService().getCachePool("TableID2DataNodeCache");
+        tableId2DataNodeCache = (LayerCachePool) CacheService.getCachePoolByName("TableID2DataNodeCache");
         tempPath = SystemConfig.getHomePath() + File.separator + "temp" + File.separator + serverConnection.getId() + File.separator;
         tempFile = tempPath + "clientTemp.txt";
         tempByteBuffer = new ByteArrayOutputStream();
 
-        if (!trySetPartitionColumnIndex(statement)) {
+        if (!trySetPartitionOrAutoIncrementColumnIndex(statement)) {
             return;
+        }
+
+        if (tableConfig != null && tableConfig.isAutoIncrement() && autoIncrementIndex == -1) {
+            final String incrementColumn = tableConfig.getIncrementColumn();
+            statement.getColumns().add(new SQLIdentifierExpr(incrementColumn));
+            autoIncrementIndex = statement.getColumns().size() - 1;
+            appendAutoIncrementColumn = true;
+            sql = SQLUtils.toMySqlString(statement);
+            if (incrementColumn.equalsIgnoreCase(getPartitionColumn())) {
+                partitionColumnIndex = autoIncrementIndex;
+            }
         }
 
         parseLoadDataPram();
@@ -194,7 +211,7 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
                 clear();
                 serverConnection.writeErrMessage(ErrorCode.ER_FILE_NOT_FOUND, msg);
             } else {
-                if (parseFileByLine(fileName, loadData.getCharset(), loadData.getLineTerminatedBy())) {
+                if (parseFileByLine((byte) 0, fileName, loadData.getCharset(), loadData.getLineTerminatedBy())) {
                     RouteResultset rrs = buildResultSet(routeResultMap);
                     if (rrs != null) {
                         flushDataToFile();
@@ -227,28 +244,34 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
     /**
      * findout the index of the partition key
      */
-    private boolean trySetPartitionColumnIndex(MySqlLoadDataInFileStatement sqlStatement) {
+    private boolean trySetPartitionOrAutoIncrementColumnIndex(MySqlLoadDataInFileStatement sqlStatement) {
         if (tableConfig != null) {
             List<SQLExpr> columns = sqlStatement.getColumns();
-
             String pColumn = getPartitionColumn();
-            if (pColumn != null) {
+            boolean autoIncrement = tableConfig.isAutoIncrement();
+            if (pColumn != null || autoIncrement) {
+                String incrementColumn = tableConfig.getIncrementColumn();
                 if (columns != null && columns.size() > 0) {
                     for (int i = 0, columnsSize = columns.size(); i < columnsSize; i++) {
                         String column = StringUtil.removeBackQuote(columns.get(i).toString());
-                        if (pColumn.equalsIgnoreCase(column)) {
+                        if (column.equalsIgnoreCase(pColumn)) {
                             partitionColumnIndex = i;
-                            break;
+                        }
+                        if (autoIncrement && column.equalsIgnoreCase(incrementColumn)) {
+                            autoIncrementIndex = i;
                         }
                     }
                 } else {
                     try {
-                        StructureMeta.TableMeta tbMeta = DbleServer.getInstance().getTmManager().getSyncTableMeta(schema.getName(), tableName);
+                        StructureMeta.TableMeta tbMeta = ProxyMeta.getInstance().getTmManager().getSyncTableMeta(schema.getName(), tableName);
                         if (tbMeta != null) {
                             for (int i = 0; i < tbMeta.getColumnsCount(); i++) {
-                                if (pColumn.equalsIgnoreCase(tbMeta.getColumns(i).getName())) {
+                                String column = tbMeta.getColumns(i).getName();
+                                if (column.equalsIgnoreCase(pColumn)) {
                                     partitionColumnIndex = i;
-                                    break;
+                                }
+                                if (autoIncrement && column.equalsIgnoreCase(incrementColumn)) {
+                                    autoIncrementIndex = i;
                                 }
                             }
                         }
@@ -317,15 +340,12 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
             ctx.addTable(tableName);
 
             if (partitionColumnIndex != -1) {
-                String value;
-                if (lineList.length < partitionColumnIndex + 1) {
-                    throw new RuntimeException("Partition column is empty in line '" + StringUtil.join(lineList, loadData.getLineTerminatedBy()) + "'");
-                } else {
-                    value = lineList[partitionColumnIndex];
+                if (lineList.length < partitionColumnIndex + 1 || StringUtil.isEmpty(lineList[partitionColumnIndex])) {
+                    throw new RuntimeException("Partition column is empty in line '" + StringUtil.join(lineList, loadData.getFieldTerminatedBy()) + "'");
                 }
                 RouteCalculateUnit routeCalculateUnit = new RouteCalculateUnit();
                 routeCalculateUnit.addShardingExpr(tableName, getPartitionColumn(),
-                        parseFieldString(value, loadData.getEnclose(), loadData.getEscape()));
+                        parseFieldString(lineList[partitionColumnIndex], loadData.getEnclose(), loadData.getEscape()));
                 ctx.addRouteCalculateUnit(routeCalculateUnit);
             }
 
@@ -339,7 +359,7 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
                         }
                     }
                 } else {
-                    RouteResultset rrsTmp = RouterUtil.tryRouteForTables(schema, ctx, null, rrs, false, tableId2DataNodeCache, null);
+                    RouteResultset rrsTmp = RouterUtil.tryRouteForTables(schema, ctx, new RouteCalculateUnit(), rrs, false, tableId2DataNodeCache, null);
                     if (rrsTmp != null) {
                         Collections.addAll(nodeSet, rrsTmp.getNodes());
                     }
@@ -367,6 +387,10 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
             for (int i = 0; i < line.length; i++) {
                 line[i] = line[i].trim();
             }
+        }
+
+        if (autoIncrementIndex != -1) {
+            line = rebuildRow(line);
         }
 
         RouteResultset rrs = tryDirectRoute(sql, line);
@@ -401,6 +425,25 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
                 }
             }
         }
+    }
+
+    private String[] rebuildRow(String[] line) throws Exception {
+        if (autoIncrementIndex >= line.length) {
+            autoIncrementIndex = line.length;
+            String[] newLine = new String[line.length + 1];
+            System.arraycopy(line, 0, newLine, 0, line.length);
+            String tableKey = StringUtil.getFullName(schema.getName(), tableName);
+            newLine[line.length] = String.valueOf(SequenceManager.getHandler().nextId(tableKey));
+            line = newLine;
+        } else {
+            if (StringUtil.isEmpty(line[autoIncrementIndex])) {
+                String tableKey = StringUtil.getFullName(schema.getName(), tableName);
+                line[autoIncrementIndex] = String.valueOf(SequenceManager.getHandler().nextId(tableKey));
+            } else if (!appendAutoIncrementColumn) {
+                throw new Exception("you can't set value for Autoincrement column!");
+            }
+        }
+        return line;
     }
 
     private void flushDataToFile() {
@@ -444,9 +487,12 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
 
     private String joinField(String[] src, LoadData loaddata) {
         StringBuilder sb = new StringBuilder();
+        String enclose = loaddata.getEnclose() == null ? "" : loaddata.getEnclose();
         for (int i = 0, srcLength = src.length; i < srcLength; i++) {
             String s = src[i] != null ? src[i] : "";
+            sb.append(enclose);
             sb.append(s);
+            sb.append(enclose);
             if (i != srcLength - 1) {
                 sb.append(loaddata.getFieldTerminatedBy());
             }
@@ -560,7 +606,7 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
         saveByteOrToFile(null, true);
 
         if (isHasStoreToFile) {
-            parseFileByLine(tempFile, loadData.getCharset(), loadData.getLineTerminatedBy());
+            parseFileByLine(packId, tempFile, loadData.getCharset(), loadData.getLineTerminatedBy());
         } else {
             String content = new String(tempByteBuffer.toByteArray(), Charset.forName(loadData.getCharset()));
             if ("".equals(content)) {
@@ -576,10 +622,12 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
             settings.setMaxColumns(DEFAULT_MAX_COLUMNS);
             settings.setMaxCharsPerColumn(systemConfig.getMaxCharsPerColumn());
             settings.getFormat().setLineSeparator(loadData.getLineTerminatedBy());
-            settings.getFormat().setDelimiter(loadData.getFieldTerminatedBy().charAt(0));
+            settings.getFormat().setDelimiter(loadData.getFieldTerminatedBy());
             settings.getFormat().setComment('\0');
             if (loadData.getEnclose() != null) {
                 settings.getFormat().setQuote(loadData.getEnclose().charAt(0));
+            } else {
+                settings.getFormat().setQuote('\0');
             }
             if (loadData.getEscape() != null) {
                 settings.getFormat().setQuoteEscape(loadData.getEscape().charAt(0));
@@ -599,6 +647,9 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
                 }
                 while ((row = parser.parseNext()) != null) {
                     if (ignoreNumber == 0) {
+                        if ((row.length == 1 && row[0] == null) || row.length == 0) {
+                            continue;
+                        }
                         try {
                             parseOneLine(row, true);
                         } catch (Exception e) {
@@ -623,15 +674,17 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
     }
 
 
-    private boolean parseFileByLine(String file, String encode, String split) {
+    private boolean parseFileByLine(byte packetID, String file, String encode, String split) {
         CsvParserSettings settings = new CsvParserSettings();
         settings.setMaxColumns(DEFAULT_MAX_COLUMNS);
         settings.setMaxCharsPerColumn(systemConfig.getMaxCharsPerColumn());
         settings.getFormat().setLineSeparator(loadData.getLineTerminatedBy());
-        settings.getFormat().setDelimiter(loadData.getFieldTerminatedBy().charAt(0));
+        settings.getFormat().setDelimiter(loadData.getFieldTerminatedBy());
         settings.getFormat().setComment('\0');
         if (loadData.getEnclose() != null) {
             settings.getFormat().setQuote(loadData.getEnclose().charAt(0));
+        } else {
+            settings.getFormat().setQuote('\0');
         }
         settings.getFormat().setNormalizedNewline(loadData.getLineTerminatedBy().charAt(0));
 
@@ -653,11 +706,14 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
             boolean empty = true;
             while ((row = parser.parseNext()) != null) {
                 if (ignoreNumber == 0) {
+                    if ((row.length == 1 && row[0] == null) || row.length == 0) {
+                        continue;
+                    }
                     try {
                         parseOneLine(row, true);
                     } catch (Exception e) {
                         clear();
-                        serverConnection.writeErrMessage(ErrorCode.ER_WRONG_VALUE_COUNT_ON_ROW, "row data can't not calculate a sharding value," + e.getMessage());
+                        serverConnection.writeErrMessage(++packetID, ErrorCode.ER_WRONG_VALUE_COUNT_ON_ROW, "row data can't not calculate a sharding value," + e.getMessage());
                         return false;
                     }
                     empty = false;
@@ -740,6 +796,8 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
         tempByteBufferSize = 0;
         tableName = null;
         partitionColumnIndex = -1;
+        autoIncrementIndex = -1;
+        appendAutoIncrementColumn = false;
         if (tempFile != null) {
             File temp = new File(tempFile);
             if (temp.exists()) {
@@ -809,6 +867,5 @@ public final class ServerLoadDataInfileHandler implements LoadDataInfileHandler 
         }
         fileDirToDel.delete();
     }
-
 
 }

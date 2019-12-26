@@ -7,7 +7,7 @@ package com.actiontech.dble.manager.handler;
 
 
 import com.actiontech.dble.DbleServer;
-import com.actiontech.dble.backend.datasource.PhysicalDBPool;
+import com.actiontech.dble.backend.datasource.AbstractPhysicalDBPool;
 import com.actiontech.dble.backend.datasource.PhysicalDatasource;
 import com.actiontech.dble.config.ErrorCode;
 import com.actiontech.dble.manager.ManagerConnection;
@@ -54,11 +54,11 @@ public final class SelectHandler {
                 break;
             default:
                 if (isSupportSelect(stmt)) {
-                    Iterator<PhysicalDBPool> iterator = DbleServer.getInstance().getConfig().getDataHosts().values().iterator();
+                    Iterator<AbstractPhysicalDBPool> iterator = DbleServer.getInstance().getConfig().getDataHosts().values().iterator();
                     if (iterator.hasNext()) {
-                        PhysicalDBPool pool = iterator.next();
+                        AbstractPhysicalDBPool pool = iterator.next();
                         final PhysicalDatasource source = pool.getSource();
-                        TransformSQLJob sqlJob = new TransformSQLJob(stmt, pool.getSchemas()[0], source, c);
+                        TransformSQLJob sqlJob = new TransformSQLJob(stmt, null, source, c);
                         sqlJob.run();
                     } else {
                         c.writeErrMessage(ErrorCode.ER_YES, "no valid data host");

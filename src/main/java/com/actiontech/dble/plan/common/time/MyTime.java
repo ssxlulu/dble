@@ -467,7 +467,7 @@ public final class MyTime {
      * We don't need the exact nanoseconds value. Knowing the first
      * digit is enough for rounding.
      */
-                status.setNanoseconds(100 * (chars[strindex++] - '0'));
+                status.setNanoseconds(100L * (chars[strindex++] - '0'));
                 for (; strindex != end && Ctype.isDigit(chars[strindex]); strindex++) {
                     //block
                 }
@@ -598,7 +598,7 @@ public final class MyTime {
             } else {
     /* Scan digits left after microseconds */
                 status.setFractionalDigits(6);
-                status.setNanoseconds(100 * (chars[pos - 1] - '0'));
+                status.setNanoseconds(100L * (chars[pos - 1] - '0'));
                 for (; pos != end && Ctype.isDigit(chars[pos]); pos++) {
                     //block
                 }
@@ -1418,7 +1418,7 @@ public final class MyTime {
         ltime2.setHour(cal2.get(java.util.Calendar.HOUR_OF_DAY));
         ltime2.setMinute(cal2.get(java.util.Calendar.MINUTE));
         ltime2.setSecond(cal2.get(java.util.Calendar.SECOND));
-        ltime2.setSecondPart(cal2.get(java.util.Calendar.MILLISECOND) * 1000);
+        ltime2.setSecondPart(cal2.get(java.util.Calendar.MILLISECOND) * 1000L);
     }
 
     public static void datetimeToTime(MySQLTime ltime) {
@@ -1470,20 +1470,6 @@ public final class MyTime {
         return (double) timeToUlonglong(ltime) + timeMicroseconds(ltime);
     }
 
-    /**
-     * Convert a datetime from broken-down MYSQL_TIME representation to
-     * corresponding TIMESTAMP value.
-     *
-     * @param - current thread
-     * @param t - datetime in broken-down representation,
-     * @param - pointer to bool which is set to true if t represents value
-     *          which doesn't exists (falls into the spring time-gap) or to
-     *          false otherwise.
-     * @return
-     * @retval Number seconds in UTC since start of Unix Epoch corresponding to
-     * t.
-     * @retval 0 - t contains datetime value which is out of TIMESTAMP range.
-     */
     public static long timeToTimestamp(final MySQLTime t) {
         long timestamp = t.toCalendar().getTimeInMillis() / 1000;
 
@@ -2186,9 +2172,9 @@ public final class MyTime {
      * @param args           item expression which we convert to an ASCII string
      * @param strValue       string buffer
      * @param negPtr         set to true if interval is prefixed by '-'
-     * @param count:         count of elements in result array
-     * @param values:        array of results
-     * @param transformMsec: if value is true we suppose that the last part of string value
+     * @param count         count of elements in result array
+     * @param values        array of results
+     * @param transformMsec  if value is true we suppose that the last part of string value
      *                       is microseconds and we should transform value to six digit
      *                       value. For example, '1.1' . '1.100000'
      * @details Get a array of positive numbers from a string object. Each
@@ -2553,7 +2539,7 @@ public final class MyTime {
         }
 
         if (weekNumber >= 0 && weekday != 0) {
-            int days;
+            long days;
             long weekdayB;
 
     /*
@@ -2568,7 +2554,7 @@ public final class MyTime {
             }
 
     /* Number of days since year 0 till 1st Jan of this year */
-            days = (int) calcDaynr((strictWeekNumber ? strictWeekNumberYear : lTime.getYear()), 1, 1);
+            days = calcDaynr((strictWeekNumber ? strictWeekNumberYear : lTime.getYear()), 1, 1);
     /* Which day of week is 1st Jan of this year */
             weekdayB = calcWeekday(days, sundayFirstNFirstWeekNonIso);
 
@@ -2578,9 +2564,9 @@ public final class MyTime {
      * week and our week 3) and position of our day in the week
      */
             if (sundayFirstNFirstWeekNonIso) {
-                days += ((weekdayB == 0) ? 0 : 7) - weekdayB + (weekNumber - 1) * 7 + weekday % 7;
+                days += ((weekdayB == 0) ? 0L : 7L) - weekdayB + (weekNumber - 1) * 7L + weekday % 7;
             } else {
-                days += ((weekdayB <= 3) ? 0 : 7) - weekdayB + (weekNumber - 1) * 7 + (weekday - 1);
+                days += ((weekdayB <= 3) ? 0L : 7L) - weekdayB + (weekNumber - 1) * 7L + (weekday - 1);
             }
 
             if (days <= 0 || days > MAX_DAY_NUMBER) {

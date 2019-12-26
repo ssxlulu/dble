@@ -5,7 +5,7 @@
 
 package com.actiontech.dble.alarm;
 
-import com.actiontech.dble.cluster.ClusterGeneralConfig;
+import com.actiontech.dble.singleton.ClusterGeneralConfig;
 import com.actiontech.dble.cluster.ClusterHelper;
 import com.actiontech.dble.cluster.ClusterParamCfg;
 import com.actiontech.dble.cluster.bean.ClusterAlertBean;
@@ -50,6 +50,11 @@ public final class UcoreAlert implements Alert {
     @Override
     public boolean alertSelfResolve(ClusterAlertBean alert) {
         return alertResolve(alert.setAlertComponentType(SOURCE_COMPONENT_TYPE).setAlertComponentId(alertComponentId));
+    }
+
+    @Override
+    public void alertConfigCheck() throws Exception {
+
     }
 
 }

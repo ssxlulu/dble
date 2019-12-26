@@ -69,8 +69,8 @@ public class HandlerBuilder {
         //set slave only into rrsNode
         for (DMLResponseHandler startHandler : fh.getMerges()) {
             MultiNodeMergeHandler mergeHandler = (MultiNodeMergeHandler) startHandler;
-            for (BaseSelectHandler bshandler : mergeHandler.getExeHandlers()) {
-                bshandler.getRrss().setRunOnSlave(this.session.getComplexRrs().getRunOnSlave());
+            for (BaseSelectHandler baseHandler : mergeHandler.getExeHandlers()) {
+                baseHandler.getRrss().setRunOnSlave(this.session.getComplexRrs().getRunOnSlave());
             }
         }
         session.endComplexRoute();
@@ -93,6 +93,8 @@ public class HandlerBuilder {
             return new QueryNodeHandlerBuilder(nonBlockingSession, (QueryNode) planNode, this, isExplain);
         } else if (i == PlanNode.PlanNodeType.NONAME) {
             return new NoNameNodeHandlerBuilder(nonBlockingSession, (NoNameNode) planNode, this, isExplain);
+        } else if (i == PlanNode.PlanNodeType.JOIN_INNER) {
+            return new JoinInnerHandlerBuilder(nonBlockingSession, (JoinInnerNode) planNode, this, isExplain);
         }
         throw new RuntimeException("not supported tree node type:" + planNode.type());
     }

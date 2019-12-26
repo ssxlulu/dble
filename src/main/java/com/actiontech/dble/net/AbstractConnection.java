@@ -25,7 +25,6 @@ import java.nio.channels.NetworkChannel;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @author mycat
@@ -52,7 +51,7 @@ public abstract class AbstractConnection implements NIOConnection {
 
     protected volatile int readBufferOffset;
     protected long lastLargeMessageTime;
-    protected final AtomicBoolean isClosed;
+    protected volatile boolean isClosed = false;
     protected long startupTime;
     protected long lastReadTime;
     protected long lastWriteTime;
@@ -77,7 +76,6 @@ public abstract class AbstractConnection implements NIOConnection {
         } else {
             socketWR = new NIOSocketWR(this);
         }
-        this.isClosed = new AtomicBoolean(false);
         this.startupTime = TimeUtil.currentTimeMillis();
         this.lastReadTime = startupTime;
         this.lastWriteTime = startupTime;
@@ -86,7 +84,6 @@ public abstract class AbstractConnection implements NIOConnection {
     public AbstractConnection() {
         /* just for unit test */
         this.channel = null;
-        this.isClosed = new AtomicBoolean(false);
         this.socketWR = null;
     }
 
@@ -277,11 +274,14 @@ public abstract class AbstractConnection implements NIOConnection {
     }
 
     public void onReadData(int got) throws IOException {
-        if (isClosed.get()) {
+        if (isClosed) {
             return;
         }
 
         lastReadTime = TimeUtil.currentTimeMillis();
+        if (lastReadTime == lastWriteTime) {
+            lastWriteTime--;
+        }
         if (got < 0) {
             if (this instanceof MySQLConnection) {
                 ((MySQLConnection) this).closeInner("stream closed");
@@ -335,7 +335,6 @@ public abstract class AbstractConnection implements NIOConnection {
                     if (readBuffer != null) {
                         readBuffer.position(position);
                     }
-                    continue;
                 }
             } else {
                 // not read whole message package ,so check if buffer enough and
@@ -371,11 +370,7 @@ public abstract class AbstractConnection implements NIOConnection {
 
     private ByteBuffer ensureFreeSpaceOfReadBuffer(ByteBuffer buffer,
                                                    int offset, final int pkgLength) {
-        // need a large buffer to hold the package
-        if (pkgLength > maxPacketSize) {
-            throw new IllegalArgumentException("Packet size over the limit.");
-        } else if (buffer.capacity() < pkgLength) {
-
+        if (buffer.capacity() < pkgLength) {
             ByteBuffer newBuffer = processor.getBufferPool().allocate(pkgLength);
             lastLargeMessageTime = TimeUtil.currentTimeMillis();
             buffer.position(offset);
@@ -415,7 +410,7 @@ public abstract class AbstractConnection implements NIOConnection {
     }
 
     @Override
-    public final void write(ByteBuffer buffer) {
+    public void write(ByteBuffer buffer) {
 
         if (isSupportCompress()) {
             ByteBuffer newBuffer = CompressUtil.compressMysqlPacket(buffer, this, compressUnfinishedDataQueue);
@@ -432,6 +427,20 @@ public abstract class AbstractConnection implements NIOConnection {
         } catch (Exception e) {
             LOGGER.info("write err:", e);
             this.close("write err:" + e);
+        }
+    }
+
+    public final boolean registerWrite(ByteBuffer buffer) {
+
+        // if ansyn write finished event got lock before me ,then writing
+        // flag is set false but not start a write request
+        // so we check again
+        try {
+            return this.socketWR.registerWrite(buffer);
+        } catch (Exception e) {
+            LOGGER.info("write err:", e);
+            this.close("write err:" + e);
+            return false;
         }
     }
 
@@ -477,10 +486,10 @@ public abstract class AbstractConnection implements NIOConnection {
 
     @Override
     public void close(String reason) {
-        if (!isClosed.get()) {
+        if (!isClosed) {
             this.connectionCount();
             closeSocket();
-            isClosed.set(true);
+            isClosed = true;
             if (processor != null) {
                 processor.removeConnection(this);
             }
@@ -504,7 +513,7 @@ public abstract class AbstractConnection implements NIOConnection {
     }
 
     public boolean isClosed() {
-        return isClosed.get();
+        return isClosed;
     }
 
     public void idleCheck() {

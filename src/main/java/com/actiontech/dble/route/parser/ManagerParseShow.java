@@ -57,8 +57,7 @@ public final class ManagerParseShow {
 
     public static final int WHITE_HOST = 43;
     public static final int WHITE_HOST_SET = 44;
-    public static final int DIRECTMEMORY_TOTAL = 45;
-    public static final int DIRECTMEMORY_DETAIL = 46;
+    public static final int DIRECTMEMORY = 45;
     public static final int BINLOG_STATUS = 47;
 
     public static final int CONNECTION_COUNT = 48;
@@ -78,9 +77,17 @@ public final class ManagerParseShow {
     public static final int DDL_STATE = 61;
     public static final int PROCESS_LIST = 62;
     public static final int SESSION_XA = 63;
+    public static final int SHOW_RELOAD = 64;
+    public static final int SHOW_USER = 65;
+    public static final int SHOW_USER_PRIVILEGE = 66;
+    public static final int SHOW_QUESTIONS = 67;
+    public static final int DATADISTRIBUTION_WHERE = 68;
 
-    public static final Pattern PATTERN_FOR_TABLE_INFO = Pattern.compile("^\\s*schema\\s*=\\s*('?)([a-zA-Z_0-9]+)\\1" +
-            "\\s+and\\s+table\\s*=\\s*('?)([a-zA-Z_0-9]+)\\3\\s*$", Pattern.CASE_INSENSITIVE);
+    public static final Pattern PATTERN_FOR_TABLE_INFO = Pattern.compile("^\\s*schema\\s*=\\s*" +
+            "(('|\")((?!`)((?!\\2).))+\\2|[a-zA-Z_0-9\\-]+)" +
+            "\\s+and\\s+table\\s*=\\s*" +
+            "(('|\")((?!`)((?!\\6).))+\\6|[a-zA-Z_0-9\\-]+)" +
+            "\\s*$", Pattern.CASE_INSENSITIVE);
 
     public static int parse(String stmt, int offset) {
         int i = offset;
@@ -153,12 +160,21 @@ public final class ManagerParseShow {
                 case 'P':
                 case 'p':
                     return show2PCheck(stmt, offset);
+                case 'Q':
+                case 'q':
+                    return show2QCheck(stmt, offset);
+                case 'R':
+                case 'r':
+                    return show2RCheck(stmt, offset);
                 case 'S':
                 case 's':
                     return show2SCheck(stmt, offset);
                 case 'T':
                 case 't':
                     return show2TCheck(stmt, offset);
+                case 'U':
+                case 'u':
+                    return show2User(stmt, offset);
                 case 'V':
                 case 'v':
                     return show2VCheck(stmt, offset);
@@ -435,6 +451,8 @@ public final class ManagerParseShow {
                     case 'S':
                     case 's':
                         return show2DataSCheck(stmt, offset);
+                    case '_':
+                        return show2DataDistributionCheck(stmt, offset);
                     default:
                         return OTHER;
                 }
@@ -474,7 +492,6 @@ public final class ManagerParseShow {
 
     // SHOW @@DIRECT_MEMORY=1 or 0
     private static int show2DirectMemoryCheck(String stmt, int offset) {
-        int returnValue = OTHER;
         if (stmt.length() > offset + "TMEMORY".length()) {
             char c1 = stmt.charAt(++offset);
             char c2 = stmt.charAt(++offset);
@@ -490,36 +507,14 @@ public final class ManagerParseShow {
                     (c4 == 'M' || c4 == 'm') &&
                     (c5 == 'O' || c5 == 'o') &&
                     (c6 == 'R' || c6 == 'r') &&
-                    (c7 == 'Y' || c7 == 'y') &&
-                    stmt.length() > ++offset) {
-
-                offset = trim(offset, stmt);
-
-                if (stmt.charAt(offset) != '=') {
-                    return OTHER;
-                } else {
-                    offset++;
-                }
-                offset = trim(offset, stmt);
-                switch (stmt.charAt(offset)) {
-                    case '1':
-                        returnValue = DIRECTMEMORY_TOTAL;
-                        break;
-                    case '2':
-                        returnValue = DIRECTMEMORY_DETAIL;
-                        break;
-                    default:
-                        return OTHER;
-                }
-
+                    (c7 == 'Y' || c7 == 'y')) {
                 if (ParseUtil.isErrorTail(++offset, stmt)) {
                     return OTHER;
                 }
-
+                return DIRECTMEMORY;
             }
         }
-
-        return returnValue;
+        return OTHER;
     }
 
     // SHOW @@DataSyn
@@ -700,6 +695,33 @@ public final class ManagerParseShow {
         return OTHER;
     }
 
+    //SHOW @@Questions
+    private static int show2QCheck(String stmt, int offset) {
+        if (stmt.length() > offset + "uestions".length()) {
+            char c1 = stmt.charAt(++offset);
+            char c2 = stmt.charAt(++offset);
+            char c3 = stmt.charAt(++offset);
+            char c4 = stmt.charAt(++offset);
+            char c5 = stmt.charAt(++offset);
+            char c6 = stmt.charAt(++offset);
+            char c7 = stmt.charAt(++offset);
+            char c8 = stmt.charAt(++offset);
+            if ((c1 == 'U' || c1 == 'u') &&
+                    (c2 == 'E' || c2 == 'e') &&
+                    (c3 == 'S' || c3 == 's') &&
+                    (c4 == 'T' || c4 == 't') &&
+                    (c5 == 'I' || c5 == 'i') &&
+                    (c6 == 'O' || c6 == 'o') &&
+                    (c7 == 'N' || c7 == 'n') &&
+                    (c8 == 'S' || c8 == 's')) {
+                if (ParseUtil.isErrorTail(++offset, stmt)) {
+                    return OTHER;
+                }
+                return SHOW_QUESTIONS;
+            }
+        }
+        return OTHER;
+    }
 
     // SHOW @@P
     private static int show2PCheck(String stmt, int offset) {
@@ -713,6 +735,41 @@ public final class ManagerParseShow {
                     return show2ProcessCheck(stmt, offset);
                 default:
                     return OTHER;
+            }
+        }
+        return OTHER;
+    }
+
+    private static int show2RCheck(String stmt, int offset) {
+        if (stmt.length() > offset + "ELOAD_STATUS".length()) {
+            char c1 = stmt.charAt(++offset);
+            char c2 = stmt.charAt(++offset);
+            char c3 = stmt.charAt(++offset);
+            char c4 = stmt.charAt(++offset);
+            char c5 = stmt.charAt(++offset);
+            char c6 = stmt.charAt(++offset);
+            char c7 = stmt.charAt(++offset);
+            char c8 = stmt.charAt(++offset);
+            char c9 = stmt.charAt(++offset);
+            char c10 = stmt.charAt(++offset);
+            char c11 = stmt.charAt(++offset);
+            char c12 = stmt.charAt(++offset);
+            if ((c1 == 'E' || c1 == 'e') &&
+                    (c2 == 'L' || c2 == 'l') &&
+                    (c3 == 'O' || c3 == 'o') &&
+                    (c4 == 'A' || c4 == 'a') &&
+                    (c5 == 'D' || c5 == 'd') &&
+                    (c6 == '_') &&
+                    (c7 == 'S' || c7 == 's') &&
+                    (c8 == 'T' || c8 == 't') &&
+                    (c9 == 'A' || c9 == 'a') &&
+                    (c10 == 'T' || c10 == 't') &&
+                    (c11 == 'U' || c11 == 'u') &&
+                    (c12 == 'S' || c12 == 's')) {
+                if (ParseUtil.isErrorTail(++offset, stmt)) {
+                    return OTHER;
+                }
+                return SHOW_RELOAD;
             }
         }
         return OTHER;
@@ -870,6 +927,41 @@ public final class ManagerParseShow {
                     return slowQueryFlushCheck(stmt, offset);
                 default:
                     return OTHER;
+            }
+        }
+        return OTHER;
+    }
+
+    //show @@user.
+    private static int show2User(String stmt, int offset) {
+        int len = stmt.length();
+        if (len > offset + 3) {
+            char c1 = stmt.charAt(++offset);
+            char c2 = stmt.charAt(++offset);
+            char c3 = stmt.charAt(++offset);
+
+            if ((c1 == 'S' || c1 == 's') && (c2 == 'E' || c2 == 'e') && (c3 == 'R' || c3 == 'r')) {
+                if (len == offset + 1 || ParseUtil.isEOF(stmt, offset)) {
+                    return SHOW_USER;
+                } else if (len > offset + 10) {
+                    // privilege
+                    char c0 = stmt.charAt(++offset);
+                    char c4 = stmt.charAt(++offset);
+                    char c5 = stmt.charAt(++offset);
+                    char c6 = stmt.charAt(++offset);
+                    char c7 = stmt.charAt(++offset);
+                    char c8 = stmt.charAt(++offset);
+                    char c9 = stmt.charAt(++offset);
+                    char c10 = stmt.charAt(++offset);
+                    char c11 = stmt.charAt(++offset);
+                    char c12 = stmt.charAt(++offset);
+                    if (c0 == '.' && (c4 == 'P' || c4 == 'p') && (c5 == 'R' || c5 == 'r') && (c6 == 'I' || c6 == 'i') &&
+                            (c7 == 'V' || c7 == 'v') && (c8 == 'I' || c8 == 'i') && (c9 == 'L' || c9 == 'l') &&
+                            (c10 == 'E' || c10 == 'e') && (c11 == 'G' || c11 == 'g') && (c12 == 'E' || c12 == 'e') &&
+                            (stmt.length() == ++offset || ParseUtil.isEOF(stmt, offset))) {
+                        return SHOW_USER_PRIVILEGE;
+                    }
+                }
             }
         }
         return OTHER;
@@ -1213,6 +1305,43 @@ public final class ManagerParseShow {
         return OTHER;
     }
 
+    private static int show2DataDistributionCheck(String stmt, int offset) {
+        if (stmt.length() > offset + "DISTRIBUTION".length()) {
+            char c1 = stmt.charAt(++offset);
+            char c2 = stmt.charAt(++offset);
+            char c3 = stmt.charAt(++offset);
+            char c4 = stmt.charAt(++offset);
+            char c5 = stmt.charAt(++offset);
+            char c6 = stmt.charAt(++offset);
+            char c7 = stmt.charAt(++offset);
+            char c8 = stmt.charAt(++offset);
+            char c9 = stmt.charAt(++offset);
+            char c10 = stmt.charAt(++offset);
+            char c11 = stmt.charAt(++offset);
+            char c12 = stmt.charAt(++offset);
+            if ((c1 == 'D' || c1 == 'd') && (c2 == 'I' || c2 == 'i') && (c3 == 'S' || c3 == 's') &&
+                    (c4 == 'T' || c4 == 't') && (c5 == 'R' || c5 == 'r') && (c6 == 'I' || c6 == 'i') &&
+                    (c7 == 'B' || c7 == 'b') && (c8 == 'U' || c8 == 'u') && (c9 == 'T' || c9 == 't') &&
+                    (c10 == 'I' || c10 == 'i') && (c11 == 'O' || c11 == 'o') && (c12 == 'N' || c12 == 'n')) {
+                while (stmt.length() > ++offset) {
+                    switch (stmt.charAt(offset)) {
+                        case ' ':
+                            continue;
+                        case 'W':
+                        case 'w':
+                            if (stmt.charAt(offset - 1) != ' ') {
+                                return OTHER;
+                            }
+                            return show2DataDistributionWhereCheck(stmt, offset);
+                        default:
+                            return OTHER;
+                    }
+                }
+            }
+        }
+        return OTHER;
+    }
+
     // SHOW @@DATASOURCE WHERE
     private static int show2DataSWhereCheck(String stmt, int offset) {
         if (stmt.length() > offset + "HERE".length()) {
@@ -1241,6 +1370,63 @@ public final class ManagerParseShow {
         return OTHER;
     }
 
+    private static int show2DataDistributionWhereCheck(String stmt, int offset) {
+        if (stmt.length() > offset + "HERE".length()) {
+            char c1 = stmt.charAt(++offset);
+            char c2 = stmt.charAt(++offset);
+            char c3 = stmt.charAt(++offset);
+            char c4 = stmt.charAt(++offset);
+            if ((c1 == 'H' || c1 == 'h') && (c2 == 'E' || c2 == 'e') && (c3 == 'R' || c3 == 'r') &&
+                    (c4 == 'E' || c4 == 'e')) {
+                while (stmt.length() > ++offset) {
+                    switch (stmt.charAt(offset)) {
+                        case ' ':
+                            continue;
+                        case 't':
+                        case 'T':
+                            if (stmt.charAt(offset - 1) != ' ') {
+                                return OTHER;
+                            }
+                            return show2DataDWhereTableCheck(stmt, offset);
+                        default:
+                            return OTHER;
+                    }
+                }
+            }
+        }
+        return OTHER;
+    }
+
+    private static int show2DataDWhereTableCheck(String stmt, int offset) {
+        if (stmt.length() > offset + "ABLE".length()) {
+            char c1 = stmt.charAt(++offset);
+            char c2 = stmt.charAt(++offset);
+            char c3 = stmt.charAt(++offset);
+            char c4 = stmt.charAt(++offset);
+            if ((c1 == 'A' || c1 == 'a') && (c2 == 'B' || c2 == 'b') && (c3 == 'L' || c3 == 'l') &&
+                    (c4 == 'E' || c4 == 'e')) {
+                while (stmt.length() > ++offset) {
+                    switch (stmt.charAt(offset)) {
+                        case ' ':
+                            continue;
+                        case '=':
+                            while (stmt.length() > ++offset) {
+                                switch (stmt.charAt(offset)) {
+                                    case ' ':
+                                        continue;
+                                    default:
+                                        return (offset << 8) | DATADISTRIBUTION_WHERE;
+                                }
+                            }
+                            return OTHER;
+                        default:
+                            return OTHER;
+                    }
+                }
+            }
+        }
+        return OTHER;
+    }
     // SHOW @@DATASOURCE WHERE DATANODE = XXXXXX
     private static int show2DataSWhereDatanodeCheck(String stmt, int offset) {
         if (stmt.length() > offset + "ATANODE".length()) {

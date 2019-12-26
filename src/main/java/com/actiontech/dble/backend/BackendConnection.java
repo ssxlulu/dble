@@ -14,8 +14,6 @@ import com.actiontech.dble.server.ServerConnection;
 import java.io.UnsupportedEncodingException;
 
 public interface BackendConnection extends ClosableConnection {
-    boolean isModifiedSQLExecuted();
-
     boolean isDDL();
 
     boolean isFromSlaveDB();
@@ -25,8 +23,6 @@ public interface BackendConnection extends ClosableConnection {
     void setSchema(String newSchema);
 
     long getLastTime();
-
-    boolean isClosedOrQuit();
 
     void setAttachment(Object attachment);
 
@@ -64,9 +60,13 @@ public interface BackendConnection extends ClosableConnection {
 
     long getId();
 
-    void terminate(String reason);
+    void closeWithoutRsp(String reason);
 
     String compactInfo();
 
     void setOldTimestamp(long oldTimestamp);
+
+    void setExecuting(boolean executing);
+
+    boolean isExecuting();
 }

@@ -7,6 +7,7 @@ package com.actiontech.dble.route.parser.druid;
 
 import com.actiontech.dble.DbleServer;
 import com.actiontech.dble.route.util.RouterUtil;
+import com.actiontech.dble.util.StringUtil;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.SQLName;
 import com.alibaba.druid.sql.ast.SQLObject;
@@ -34,7 +35,8 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
     private boolean hasOrCondition = false;
     private List<WhereUnit> whereUnits = new CopyOnWriteArrayList<>();
     private List<WhereUnit> storedWhereUnits = new CopyOnWriteArrayList<>();
-    private boolean notInWhere = false;
+    private boolean inSelect = false;
+    private boolean inOuterJoin = false;
     private List<SQLSelect> subQueryList = new ArrayList<>();
     private Map<String, String> aliasMap = new LinkedHashMap<>();
     private List<String> selectTableList = new ArrayList<>();
@@ -112,9 +114,9 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
     public boolean visit(SQLSelectItem x) {
         //need to protect parser SQLSelectItem, or SQLBinaryOpExpr may add to whereUnit
         // eg:id =1 will add to whereUnit
-        notInWhere = true;
+        inSelect = true;
         x.getExpr().accept(this);
-        notInWhere = false;
+        inSelect = false;
 
         //alias for select item is useless
         //        String alias = x.getAlias();
@@ -137,6 +139,69 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
         //            }
         //        }
         return false;
+    }
+
+    @Override
+    public boolean visit(SQLJoinTableSource x) {
+        switch (x.getJoinType()) {
+            case LEFT_OUTER_JOIN:
+            case RIGHT_OUTER_JOIN:
+            case FULL_OUTER_JOIN:
+                inOuterJoin = true;
+                break;
+            default:
+                inOuterJoin = false;
+                break;
+        }
+
+        SQLTableSource left = x.getLeft(), right = x.getRight();
+
+        left.accept(this);
+        right.accept(this);
+
+        SQLExpr condition = x.getCondition();
+        if (condition != null) {
+            condition.accept(this);
+        }
+
+        if (x.getUsing().size() > 0 &&
+                left instanceof SQLExprTableSource && right instanceof SQLExprTableSource) {
+            SQLExpr leftExpr = ((SQLExprTableSource) left).getExpr();
+            SQLExpr rightExpr = ((SQLExprTableSource) right).getExpr();
+
+            for (SQLExpr expr : x.getUsing()) {
+                if (expr instanceof SQLIdentifierExpr) {
+                    String name = ((SQLIdentifierExpr) expr).getName();
+                    /*
+                    when the shard1 a join shard2 b using(id)
+                    the intermediate condition should be a.id = b.id instead of shard1.id = shard2.id
+                     */
+                    SQLPropertyExpr leftPropExpr = new SQLPropertyExpr(leftExpr, name);
+                    if (left.getAlias() != null) {
+                        leftPropExpr.setOwner(left.getAlias());
+                    }
+                    SQLPropertyExpr rightPropExpr = new SQLPropertyExpr(rightExpr, name);
+                    if (right.getAlias() != null) {
+                        rightPropExpr.setOwner(right.getAlias());
+                    }
+
+                    leftPropExpr.setResolvedTableSource(left);
+                    rightPropExpr.setResolvedTableSource(right);
+
+                    SQLBinaryOpExpr usingCondition = new SQLBinaryOpExpr(leftPropExpr, SQLBinaryOperator.Equality, rightPropExpr);
+                    usingCondition.accept(this);
+                }
+            }
+        }
+
+        inOuterJoin = false;
+        return false;
+    }
+
+    @Override
+    public boolean visit(SQLSubqueryTableSource x) {
+        putAliasToMap(x.getAlias(), "subquery");
+        return super.visit(x);
     }
 
     @Override
@@ -204,6 +269,7 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
         return true;
     }
 
+
     @Override
     public boolean visit(SQLBinaryOpExpr x) {
         if (isUnaryParentEffect(x)) return true;
@@ -215,7 +281,7 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
             case LessThanOrEqualOrGreaterThan:
             case Is:
             case IsNot:
-                if (!notInWhere) {
+                if (!inSelect && !inOuterJoin) {
                     handleCondition(x.getLeft(), x.getOperator().name, x.getRight());
                     handleCondition(x.getRight(), x.getOperator().name, x.getLeft());
                     handleRelationship(x.getLeft(), x.getOperator().name, x.getRight());
@@ -223,7 +289,7 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
                 break;
             case BooleanOr:
                 //remove always true
-                if (!RouterUtil.isConditionAlwaysTrue(x) && !notInWhere) {
+                if (!RouterUtil.isConditionAlwaysTrue(x) && !inSelect && !inOuterJoin) {
                     hasOrCondition = true;
                     WhereUnit whereUnit;
                     whereUnit = new WhereUnit(x);
@@ -283,10 +349,10 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
             String ident = identName.toString();
             currentTable = ident;
 
-            aliasMap.put(ident, ident);
+            putAliasToMap(ident, ident.replace("`", ""));
             String alias = x.getTableSource().getAlias();
             if (alias != null) {
-                aliasMap.put(alias, ident);
+                putAliasToMap(alias, ident.replace("`", ""));
             }
         } else {
             x.getTableSource().accept(this);
@@ -306,11 +372,11 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
             selectTableList.add(ident);
             String alias = x.getAlias();
             if (alias != null && !aliasMap.containsKey(alias)) {
-                putAliasToMap(alias, ident);
+                putAliasToMap(alias, ident.replace("`", ""));
             }
 
             if (!aliasMap.containsKey(ident)) {
-                putAliasToMap(ident, ident);
+                putAliasToMap(ident, ident.replace("`", ""));
             }
         } else {
             this.accept(x.getExpr());
@@ -418,21 +484,13 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
             if (betweenExpr.getTestExpr() instanceof SQLPropertyExpr) { //field has alias
                 tableName = ((SQLIdentifierExpr) ((SQLPropertyExpr) betweenExpr.getTestExpr()).getOwner()).getName();
                 column = ((SQLPropertyExpr) betweenExpr.getTestExpr()).getName();
-                if (aliasMap.containsKey(tableName)) {
-                    tableName = aliasMap.get(tableName);
-                }
-                return new Column(tableName, column);
             } else if (betweenExpr.getTestExpr() instanceof SQLIdentifierExpr) {
                 column = ((SQLIdentifierExpr) betweenExpr.getTestExpr()).getName();
                 tableName = getOwnerTableName(betweenExpr, column);
             }
-            String table = tableName;
-            if (aliasMap.containsKey(table)) {
-                table = aliasMap.get(table);
-            }
-
-            if (table != null && !"".equals(table)) {
-                return new Column(table, column);
+            if (tableName != null && !"".equals(tableName)) {
+                checkAliasInColumn(tableName);
+                return new Column(tableName, column);
             }
         }
         return null;
@@ -441,13 +499,6 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
     private Column getColumnByExpr(SQLIdentifierExpr expr) {
         String column = expr.getName();
         String table = currentTable;
-        if (table != null && aliasMap.containsKey(table)) {
-            table = aliasMap.get(table);
-            if (table == null) {
-                return null;
-            }
-        }
-
         if (table != null) {
             return new Column(table, column);
         }
@@ -469,14 +520,28 @@ public class ServerSchemaStatVisitor extends MySqlSchemaStatVisitor {
             } else {
                 tableName = ((SQLIdentifierExpr) owner).getName();
             }
-            String table = tableName;
-            if (aliasMap.containsKey(table)) {
-                table = aliasMap.get(table);
-            }
-            return new Column(table, column);
+            checkAliasInColumn(tableName);
+            return new Column(tableName, column);
         }
 
         return null;
+    }
+
+    private void checkAliasInColumn(String tableName) {
+        if (aliasMap.containsKey(tableName)) {
+            return;
+        }
+        String tempStr;
+        if (StringUtil.isAlias(tableName)) {
+            tempStr = tableName.replace("`", "");
+        } else {
+            tempStr = "`" + tableName + "`";
+        }
+        if (aliasMap.containsKey(tempStr)) {
+            putAliasToMap(tableName, aliasMap.get(tempStr));
+        } else {
+            putAliasToMap(tableName, tableName.replace("`", ""));
+        }
     }
 
     /**

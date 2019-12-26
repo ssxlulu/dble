@@ -5,7 +5,6 @@
 
 package com.actiontech.dble.backend.mysql.nio.handler.query.impl;
 
-import com.actiontech.dble.DbleServer;
 import com.actiontech.dble.backend.BackendConnection;
 import com.actiontech.dble.backend.mysql.CharsetUtil;
 import com.actiontech.dble.backend.mysql.nio.handler.query.BaseDMLHandler;
@@ -20,6 +19,7 @@ import com.actiontech.dble.plan.Order;
 import com.actiontech.dble.plan.common.field.Field;
 import com.actiontech.dble.plan.common.item.Item;
 import com.actiontech.dble.server.NonBlockingSession;
+import com.actiontech.dble.singleton.BufferPoolManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,7 +59,7 @@ public class DistinctHandler extends BaseDMLHandler {
         if (terminate.get())
             return;
         if (this.pool == null)
-            this.pool = DbleServer.getInstance().getBufferPool();
+            this.pool = BufferPoolManager.getBufferPool();
         this.fieldPackets = fieldPackets;
         List<Field> sourceFields = HandlerTool.createFields(this.fieldPackets);
         if (this.distinctCols == null) {
@@ -74,7 +74,8 @@ public class DistinctHandler extends BaseDMLHandler {
         if (orders == null)
             orders = HandlerTool.makeOrder(this.distinctCols);
         RowDataComparator comparator = new RowDataComparator(this.fieldPackets, orders, this.isAllPushDown(), type());
-        localResult = new DistinctSortedLocalResult(pool, sourceFields.size(), comparator, CharsetUtil.getJavaCharset(conn.getCharset().getResults())).
+        String charSet = conn != null ? CharsetUtil.getJavaCharset(conn.getCharset().getResults()) : CharsetUtil.getJavaCharset(session.getSource().getCharset().getResults());
+        localResult = new DistinctSortedLocalResult(pool, sourceFields.size(), comparator, charSet).
                 setMemSizeController(session.getOtherBufferMC());
         nextHandler.fieldEofResponse(null, null, this.fieldPackets, null, this.isLeft, conn);
     }

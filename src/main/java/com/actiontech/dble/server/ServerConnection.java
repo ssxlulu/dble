@@ -1,14 +1,18 @@
 /*
-* Copyright (C) 2016-2019 ActionTech.
-* based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
-* License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
-*/
+ * Copyright (C) 2016-2019 ActionTech.
+ * based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
+ * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
+ */
 package com.actiontech.dble.server;
 
 import com.actiontech.dble.DbleServer;
+import com.actiontech.dble.backend.BackendConnection;
+import com.actiontech.dble.backend.mysql.nio.handler.transaction.ImplictCommitHandler;
+import com.actiontech.dble.backend.mysql.nio.handler.transaction.savepoint.SavePointHandler;
 import com.actiontech.dble.backend.mysql.xa.TxState;
 import com.actiontech.dble.config.ErrorCode;
 import com.actiontech.dble.config.ServerConfig;
+import com.actiontech.dble.config.loader.zkprocess.zookeeper.process.DDLTraceInfo;
 import com.actiontech.dble.config.model.SchemaConfig;
 import com.actiontech.dble.config.model.TableConfig;
 import com.actiontech.dble.config.model.UserConfig;
@@ -22,7 +26,9 @@ import com.actiontech.dble.server.parser.ServerParse;
 import com.actiontech.dble.server.response.Heartbeat;
 import com.actiontech.dble.server.response.InformationSchemaProfiling;
 import com.actiontech.dble.server.response.Ping;
+import com.actiontech.dble.server.response.ShowCreateView;
 import com.actiontech.dble.server.util.SchemaUtil;
+import com.actiontech.dble.singleton.*;
 import com.actiontech.dble.util.*;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.utils.ZKPaths;
@@ -30,10 +36,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.NetworkChannel;
 import java.sql.SQLException;
 import java.sql.SQLNonTransientException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
@@ -59,15 +67,6 @@ public class ServerConnection extends FrontendConnection {
     private AtomicLong txID;
     private List<Pair<SetHandler.KeyType, Pair<String, String>>> contextTask = new ArrayList<>();
 
-    public long getAndIncrementXid() {
-        return txID.getAndIncrement();
-    }
-
-
-    public long getXid() {
-        return txID.get();
-    }
-
     public ServerConnection(NetworkChannel channel)
             throws IOException {
         super(channel);
@@ -79,8 +78,17 @@ public class ServerConnection extends FrontendConnection {
         this.sysVariables = new LinkedHashMap<>();
     }
 
+
     public ServerConnection() {
         /* just for unit test */
+    }
+
+    public long getAndIncrementXid() {
+        return txID.getAndIncrement();
+    }
+
+    public long getXid() {
+        return txID.get();
     }
 
     public ServerSptPrepare getSptPrepare() {
@@ -180,6 +188,11 @@ public class ServerConnection extends FrontendConnection {
         session.startProcess();
     }
 
+    @Override
+    public void markFinished() {
+        session.setStageFinished();
+    }
+
     public void executeTask() {
         for (Pair<SetHandler.KeyType, Pair<String, String>> task : contextTask) {
             switch (task.getKey()) {
@@ -268,29 +281,6 @@ public class ServerConnection extends FrontendConnection {
 
     }
 
-    public RouteResultset routeSQL(String sql, int type) {
-        String db = this.schema;
-        if (db == null) {
-            writeErrMessage(ErrorCode.ERR_BAD_LOGICDB, "No Database selected");
-            return null;
-        }
-        SchemaConfig schema = DbleServer.getInstance().getConfig().getSchemas().get(db);
-        if (schema == null) {
-            writeErrMessage(ErrorCode.ERR_BAD_LOGICDB, "Unknown Database '" + db + "'");
-            return null;
-        }
-
-        RouteResultset rrs;
-        try {
-            rrs = DbleServer.getInstance().getRouterService().route(schema, type, sql, this);
-        } catch (Exception e) {
-            executeException(e, sql);
-            return null;
-        }
-        return rrs;
-    }
-
-
     public void routeSystemInfoAndExecuteSQL(String stmt, SchemaUtil.SchemaInfo schemaInfo, int sqlType) {
         ServerConfig conf = DbleServer.getInstance().getConfig();
         UserConfig user = conf.getUsers().get(this.getUser());
@@ -306,8 +296,8 @@ public class ServerConnection extends FrontendConnection {
             } else {
                 TableConfig tc = schemaInfo.getSchemaConfig().getTables().get(schemaInfo.getTable());
                 if (tc == null) {
-                    String msg = "Table '" + schemaInfo.getSchema() + "." + schemaInfo.getTable() + "' doesn't exist";
-                    writeErrMessage("42S02", msg, ErrorCode.ER_NO_SUCH_TABLE);
+                    // check view
+                    ShowCreateView.response(this, schemaInfo.getSchema(), schemaInfo.getTable());
                     return;
                 }
                 RouterUtil.routeToRandomNode(rrs, schemaInfo.getSchemaConfig(), schemaInfo.getTable());
@@ -319,22 +309,27 @@ public class ServerConnection extends FrontendConnection {
     }
 
     private void routeEndExecuteSQL(String sql, int type, SchemaConfig schema) {
-        RouteResultset rrs;
+        RouteResultset rrs = null;
         try {
-            rrs = DbleServer.getInstance().getRouterService().route(schema, type, sql, this);
+            rrs = RouteService.getInstance().route(schema, type, sql, this);
             if (rrs == null) {
                 return;
             }
             if (rrs.getSqlType() == ServerParse.DDL && rrs.getSchema() != null) {
+                DDLTraceManager.getInstance().startDDL(this);
                 addTableMetaLock(rrs);
-                if (DbleServer.getInstance().getTmManager().getCatalogs().get(rrs.getSchema()).getView(rrs.getTable()) != null) {
-                    DbleServer.getInstance().getTmManager().removeMetaLock(rrs.getSchema(), rrs.getTable());
+                if (ProxyMeta.getInstance().getTmManager().getCatalogs().get(rrs.getSchema()).getView(rrs.getTable()) != null) {
+                    ProxyMeta.getInstance().getTmManager().removeMetaLock(rrs.getSchema(), rrs.getTable());
                     String msg = "Table '" + rrs.getTable() + "' already exists as a view";
                     LOGGER.info(msg);
                     throw new SQLNonTransientException(msg);
                 }
+                DDLTraceManager.getInstance().updateDDLStatus(DDLTraceInfo.DDLStage.LOCK_END, this);
             }
         } catch (Exception e) {
+            if (rrs != null && rrs.getSqlType() == ServerParse.DDL && rrs.getSchema() != null) {
+                DDLTraceManager.getInstance().endDDL(this, e.getMessage());
+            }
             executeException(e, sql);
             return;
         }
@@ -347,25 +342,25 @@ public class ServerConnection extends FrontendConnection {
         String table = rrs.getTable();
         try {
             //lock self meta
-            DbleServer.getInstance().getTmManager().addMetaLock(schema, table, rrs.getSrcStatement());
-            if (DbleServer.getInstance().isUseZK()) {
+            ProxyMeta.getInstance().getTmManager().addMetaLock(schema, table, rrs.getSrcStatement());
+            if (ClusterGeneralConfig.isUseZK()) {
                 String nodeName = StringUtil.getFullName(schema, table);
                 String ddlPath = KVPathUtil.getDDLPath();
                 String nodePth = ZKPaths.makePath(ddlPath, nodeName);
                 CuratorFramework zkConn = ZKUtils.getConnection();
                 if (zkConn.checkExists().forPath(KVPathUtil.getSyncMetaLockPath()) != null || zkConn.checkExists().forPath(nodePth) != null) {
-                    String msg = "The syncMeta.lock or metaLock about " + nodeName + " in " + ddlPath + "is Exists";
-                    LOGGER.info(msg);
+                    String msg = "The metaLock about `" + nodeName + "` is exists. It means other instance is doing DDL.";
+                    LOGGER.info(msg + " The path of DDL is " + ddlPath);
                     throw new Exception(msg);
                 }
-                DbleServer.getInstance().getTmManager().notifyClusterDDL(schema, table, rrs.getStatement());
-            } else if (DbleServer.getInstance().isUseGeneralCluster()) {
-                DbleServer.getInstance().getTmManager().notifyClusterDDL(schema, table, rrs.getStatement());
+                ProxyMeta.getInstance().getTmManager().notifyClusterDDL(schema, table, rrs.getStatement());
+            } else if (ClusterGeneralConfig.isUseGeneralCluster()) {
+                ProxyMeta.getInstance().getTmManager().notifyClusterDDL(schema, table, rrs.getStatement());
             }
         } catch (SQLNonTransientException e) {
             throw e;
         } catch (Exception e) {
-            DbleServer.getInstance().getTmManager().removeMetaLock(schema, table);
+            ProxyMeta.getInstance().getTmManager().removeMetaLock(schema, table);
             throw new SQLNonTransientException(e.toString() + ",sql:" + rrs.getStatement());
         }
     }
@@ -413,6 +408,18 @@ public class ServerConnection extends FrontendConnection {
         }
     }
 
+    // savepoint
+    public void performSavePoint(String spName, SavePointHandler.Type type) {
+        if (!autocommit || isTxStart()) {
+            if (type == SavePointHandler.Type.ROLLBACK && txInterrupted) {
+                txInterrupted = false;
+            }
+            session.performSavePoint(spName, type);
+        } else {
+            writeErrMessage(ErrorCode.ER_YES, "please use in transaction!");
+        }
+    }
+
     public void rollback() {
         if (txInterrupted) {
             txInterrupted = false;
@@ -422,13 +429,20 @@ public class ServerConnection extends FrontendConnection {
     }
 
     void lockTable(String sql) {
-        // lock table is disable in transaction
-        if (!autocommit || isTxStart()) {
-            writeErrMessage(ErrorCode.ER_YES, "can't lock tables in transaction in dble!");
+        // except xa transaction
+        if ((!isAutocommit() || isTxStart()) && session.getSessionXaID() == null) {
+            session.implictCommit(new ImplictCommitHandler() {
+                @Override
+                public void next() {
+                    doLockTable(sql);
+                }
+            });
             return;
         }
+        doLockTable(sql);
+    }
 
-
+    private void doLockTable(String sql) {
         String db = this.schema;
         SchemaConfig schema = null;
         if (this.schema != null) {
@@ -438,23 +452,21 @@ public class ServerConnection extends FrontendConnection {
                 return;
             }
         }
+
         RouteResultset rrs;
         try {
-            rrs = DbleServer.getInstance().getRouterService().route(schema, ServerParse.LOCK, sql, this);
+            rrs = RouteService.getInstance().route(schema, ServerParse.LOCK, sql, this);
         } catch (Exception e) {
             executeException(e, sql);
-            return ;
+            return;
         }
+
         if (rrs != null) {
             session.lockTable(rrs);
         }
     }
 
     void unLockTable(String sql) {
-        if (!autocommit || isTxStart()) {
-            writeErrMessage(ErrorCode.ER_YES, "can't unlock tables in transaction in dble!");
-            return;
-        }
         sql = sql.replaceAll("\n", " ").replaceAll("\t", " ");
         String[] words = SplitUtil.split(sql, ' ', true);
         if (words.length == 2 && ("table".equalsIgnoreCase(words[1]) || "tables".equalsIgnoreCase(words[1]))) {
@@ -463,12 +475,41 @@ public class ServerConnection extends FrontendConnection {
         } else {
             writeErrMessage(ErrorCode.ER_UNKNOWN_COM_ERROR, "Unknown command");
         }
+    }
 
+    public void innerCleanUp() {
+        //rollback and unlock tables  means close backend conns;
+        Iterator<BackendConnection> connIterator = session.getTargetMap().values().iterator();
+        while (connIterator.hasNext()) {
+            BackendConnection conn = connIterator.next();
+            conn.closeWithoutRsp("com_reset_connection");
+            connIterator.remove();
+        }
+        isLocked = false;
+        txChainBegin = false;
+        txStarted = false;
+        txInterrupted = false;
+        if (session.getXaState() != null) {
+            session.setXaState(TxState.TX_INITIALIZE_STATE);
+        }
+        this.getSysVariables().clear();
+        this.getUsrVariables().clear();
+        String defaultAutocommit = DbleServer.getInstance().getSystemVariables().getDefaultValue("autocommit").toLowerCase();
+        autocommit = "1".equals(defaultAutocommit) || "on".equals(defaultAutocommit) || "true".equals(defaultAutocommit);
+        txIsolation = DbleServer.getInstance().getConfig().getSystem().getTxIsolation();
+        this.setCharacterSet(DbleServer.getInstance().getConfig().getSystem().getCharset());
+        lastInsertId = 0;
+
+        //prepare
+        if (prepareHandler != null) {
+            prepareHandler.clear();
+        }
     }
 
     @Override
-    public void close(String reason) {
+    public synchronized void close(String reason) {
 
+        TsQueriesCounter.getInstance().addToHistory(session);
         //XA transaction in this phase,close it
         if (session.getSource().isTxStart() && session.cancelableStatusSet(NonBlockingSession.CANCEL_STATUS_CANCELING) &&
                 session.getXaState() != null && session.getXaState() != TxState.TX_INITIALIZE_STATE) {
@@ -506,7 +547,7 @@ public class ServerConnection extends FrontendConnection {
     @Override
     public String toString() {
         StringBuilder result = new StringBuilder();
-        result.append("ServerConnection [id=");
+        result.append("ServerConnection [frontId=");
         result.append(id);
         result.append(", schema=");
         result.append(schema);
@@ -542,5 +583,19 @@ public class ServerConnection extends FrontendConnection {
     public void writeErrMessage(int vendorCode, String msg) {
         byte packetId = (byte) this.getSession2().getPacketId().get();
         super.writeErrMessage(++packetId, vendorCode, msg);
+    }
+
+    @Override
+    public void write(byte[] data) {
+        SerializableLock.getInstance().unLock(this.id);
+        markFinished();
+        super.write(data);
+    }
+
+    @Override
+    public final void write(ByteBuffer buffer) {
+        SerializableLock.getInstance().unLock(this.id);
+        markFinished();
+        super.write(buffer);
     }
 }

@@ -10,8 +10,8 @@ import com.actiontech.dble.alarm.AlarmCode;
 import com.actiontech.dble.alarm.Alert;
 import com.actiontech.dble.alarm.AlertUtil;
 import com.actiontech.dble.alarm.ToResolveContainer;
+import com.actiontech.dble.backend.datasource.AbstractPhysicalDBPool;
 import com.actiontech.dble.backend.datasource.PhysicalDBNode;
-import com.actiontech.dble.backend.datasource.PhysicalDBPool;
 import com.actiontech.dble.backend.datasource.PhysicalDatasource;
 import com.actiontech.dble.backend.heartbeat.MySQLConsistencyChecker;
 import com.actiontech.dble.backend.mysql.nio.MySQLDataSource;
@@ -120,8 +120,8 @@ public final class GlobalTableUtil {
                 for (PhysicalDBNode dbNode : map.values()) {
                     // <dataNode name="dn1" dataHost="localhost1" database="db1" />
                     if (nodeName.equals(dbNode.getName())) {    // dn1,dn2,dn3
-                        PhysicalDBPool pool = dbNode.getDbPool();
-                        Collection<PhysicalDatasource> allDS = pool.getAllDataSources();
+                        AbstractPhysicalDBPool pool = dbNode.getDbPool();
+                        Collection<PhysicalDatasource> allDS = pool.getAllActiveDataSources();
                         for (PhysicalDatasource pds : allDS) {
                             if (pds instanceof MySQLDataSource) {
                                 ArrayList<PhysicalDBNode> nodes = executedMap.get(pds.getName());
@@ -141,7 +141,7 @@ public final class GlobalTableUtil {
                 for (int index = 0; index < nodes.size(); index++) {
                     schemas[index] = StringUtil.removeBackQuote(nodes.get(index).getDatabase());
                 }
-                Collection<PhysicalDatasource> allDS = nodes.get(0).getDbPool().getAllDataSources();
+                Collection<PhysicalDatasource> allDS = nodes.get(0).getDbPool().getAllActiveDataSources();
                 for (PhysicalDatasource pds : allDS) {
                     if (pds instanceof MySQLDataSource && entry.getKey().equals(pds.getName())) {
                         MySQLDataSource mds = (MySQLDataSource) pds;

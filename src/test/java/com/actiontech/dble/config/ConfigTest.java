@@ -5,6 +5,7 @@
 
 package com.actiontech.dble.config;
 
+import com.actiontech.dble.backend.datasource.AbstractPhysicalDBPool;
 import com.actiontech.dble.backend.datasource.PhysicalDBPool;
 import com.actiontech.dble.backend.datasource.PhysicalDatasource;
 import com.actiontech.dble.backend.mysql.nio.MySQLDataSource;
@@ -28,7 +29,7 @@ public class ConfigTest {
 
     private SystemConfig system;
     private final Map<String, UserConfig> users;
-    private Map<String, PhysicalDBPool> dataHosts;
+    private Map<String, AbstractPhysicalDBPool> dataHosts;
     private Map<ERTable, Set<ERTable>> erRealtions;
 
     public ConfigTest() {
@@ -55,17 +56,17 @@ public class ConfigTest {
      * <table name="tb3" dataNode="dnTest1,dnTest2" rule="rule1" />
      * </schema>
      * <schema name="ertest">
-     * <table name="er_parent" primaryKey="ID" dataNode="dnTest1,dnTest2" rule="rule1">
-     * <childTable name="er_child1" primaryKey="child1_id" joinKey="child1_id" parentKey="id" >
-     * <childTable name="er_grandson" primaryKey="grandson_id" joinKey="grandson_id" parentKey="child1_id" />
+     * <table name="er_parent" cacheKey="ID" dataNode="dnTest1,dnTest2" rule="rule1">
+     * <childTable name="er_child1" cacheKey="child1_id" joinKey="child1_id" parentKey="id" >
+     * <childTable name="er_grandson" cacheKey="grandson_id" joinKey="grandson_id" parentKey="child1_id" />
      * </childTable>
-     * <childTable name="er_child2" primaryKey="child2_id" joinKey="child2_id" parentKey="id2" />
-     * <childTable name="er_child3" primaryKey="child3_id" joinKey="child_char" parentKey="c_char" />
-     * <childTable name="er_child4" primaryKey="child4_id" joinKey="child4_id" parentKey="id2" >
-     * <childTable name="er_grandson2" primaryKey="grandson2_id" joinKey="grandson2_id" parentKey="child4_id2" />
+     * <childTable name="er_child2" cacheKey="child2_id" joinKey="child2_id" parentKey="id2" />
+     * <childTable name="er_child3" cacheKey="child3_id" joinKey="child_char" parentKey="c_char" />
+     * <childTable name="er_child4" cacheKey="child4_id" joinKey="child4_id" parentKey="id2" >
+     * <childTable name="er_grandson2" cacheKey="grandson2_id" joinKey="grandson2_id" parentKey="child4_id2" />
      * </childTable>
-     * <childTable name="er_child5" primaryKey="child5_id" joinKey="child5_id" parentKey="id" >
-     * <childTable name="er_grandson3" primaryKey="grandson3_id" joinKey="grandson3_id" parentKey="child5_id2" />
+     * <childTable name="er_child5" cacheKey="child5_id" joinKey="child5_id" parentKey="id" >
+     * <childTable name="er_grandson3" cacheKey="grandson3_id" joinKey="grandson3_id" parentKey="child5_id2" />
      * </childTable>
      * </table>
      * </schema>
@@ -136,7 +137,7 @@ public class ConfigTest {
      */
     @Test
     public void testTempReadHostAvailable() {
-        PhysicalDBPool pool = this.dataHosts.get("localhost2");
+        AbstractPhysicalDBPool pool = this.dataHosts.get("localhost2");
         DataHostConfig hostConfig = pool.getSource().getHostConfig();
         Assert.assertTrue(hostConfig.isTempReadHostAvailable() == true);
     }
@@ -154,16 +155,16 @@ public class ConfigTest {
 
         ArrayList<PhysicalDatasource> okSources = new ArrayList<PhysicalDatasource>();
 
-        PhysicalDBPool pool = this.dataHosts.get("localhost2");
-        okSources.addAll(pool.getAllDataSources());
+        AbstractPhysicalDBPool pool = this.dataHosts.get("localhost2");
+        okSources.addAll(pool.getAllActiveDataSources());
         PhysicalDatasource source = pool.randomSelect(okSources);
 
         Assert.assertTrue(source != null);
     }
 
-    private Map<String, PhysicalDBPool> initDataHosts(SchemaLoader schemaLoader) {
+    private Map<String, AbstractPhysicalDBPool> initDataHosts(SchemaLoader schemaLoader) {
         Map<String, DataHostConfig> nodeConfs = schemaLoader.getDataHosts();
-        Map<String, PhysicalDBPool> nodes = new HashMap<String, PhysicalDBPool>(
+        Map<String, AbstractPhysicalDBPool> nodes = new HashMap<String, AbstractPhysicalDBPool>(
                 nodeConfs.size());
         for (DataHostConfig conf : nodeConfs.values()) {
             PhysicalDBPool pool = getPhysicalDBPool(conf);

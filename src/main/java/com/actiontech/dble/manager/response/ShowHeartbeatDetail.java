@@ -6,9 +6,9 @@
 package com.actiontech.dble.manager.response;
 
 import com.actiontech.dble.DbleServer;
-import com.actiontech.dble.backend.datasource.PhysicalDBPool;
+import com.actiontech.dble.backend.datasource.AbstractPhysicalDBPool;
 import com.actiontech.dble.backend.datasource.PhysicalDatasource;
-import com.actiontech.dble.backend.heartbeat.DBHeartbeat;
+import com.actiontech.dble.backend.heartbeat.MySQLHeartbeat;
 import com.actiontech.dble.backend.mysql.PacketUtil;
 import com.actiontech.dble.config.ErrorCode;
 import com.actiontech.dble.config.Fields;
@@ -110,11 +110,11 @@ public final class ShowHeartbeatDetail {
         ServerConfig conf = DbleServer.getInstance().getConfig();
         String ip = "";
         int port = 0;
-        DBHeartbeat hb = null;
+        MySQLHeartbeat hb = null;
 
-        Map<String, PhysicalDBPool> dataHosts = conf.getDataHosts();
-        for (PhysicalDBPool pool : dataHosts.values()) {
-            for (PhysicalDatasource ds : pool.getAllDataSources()) {
+        Map<String, AbstractPhysicalDBPool> dataHosts = conf.getDataHosts();
+        for (AbstractPhysicalDBPool pool : dataHosts.values()) {
+            for (PhysicalDatasource ds : pool.getAllActiveDataSources()) {
                 if (name.equals(ds.getName())) {
                     hb = ds.getHeartbeat();
                     ip = ds.getConfig().getIp();

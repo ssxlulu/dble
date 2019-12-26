@@ -1,8 +1,8 @@
 /*
-* Copyright (C) 2016-2019 ActionTech.
-* based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
-* License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
-*/
+ * Copyright (C) 2016-2019 ActionTech.
+ * based on code by MyCATCopyrightHolder Copyright (c) 2013, OpenCloudDB/MyCAT.
+ * License: http://www.gnu.org/licenses/gpl.html GPL version 2 or higher.
+ */
 package com.actiontech.dble.net;
 
 import com.actiontech.dble.DbleServer;
@@ -11,12 +11,13 @@ import com.actiontech.dble.backend.mysql.MySQLMessage;
 import com.actiontech.dble.config.Capabilities;
 import com.actiontech.dble.config.ErrorCode;
 import com.actiontech.dble.config.Versions;
+import com.actiontech.dble.config.util.AuthUtil;
 import com.actiontech.dble.manager.ManagerConnection;
 import com.actiontech.dble.net.handler.*;
-import com.actiontech.dble.net.mysql.ErrorPacket;
-import com.actiontech.dble.net.mysql.HandshakeV10Packet;
-import com.actiontech.dble.net.mysql.MySQLPacket;
-import com.actiontech.dble.net.mysql.OkPacket;
+import com.actiontech.dble.net.mysql.*;
+import com.actiontech.dble.server.ServerConnection;
+import com.actiontech.dble.singleton.FrontendUserManager;
+import com.actiontech.dble.singleton.SerializableLock;
 import com.actiontech.dble.util.CompressUtil;
 import com.actiontech.dble.util.RandomUtil;
 import com.actiontech.dble.util.StringUtil;
@@ -32,6 +33,7 @@ import java.nio.channels.SocketChannel;
 import java.util.List;
 import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @author mycat
@@ -43,6 +45,8 @@ public abstract class FrontendConnection extends AbstractConnection {
     protected byte[] seed;
     protected String user;
     protected String schema;
+    private long clientFlags;
+
     protected String executeSql;
 
     protected FrontendPrivileges privileges;
@@ -54,7 +58,7 @@ public abstract class FrontendConnection extends AbstractConnection {
     protected boolean isAuthenticated;
     private boolean userReadOnly = true;
     private boolean sessionReadOnly = false;
-    private boolean multStatementAllow = false;
+    private volatile boolean multStatementAllow = false;
 
     public FrontendConnection(NetworkChannel channel) throws IOException {
         super(channel);
@@ -106,6 +110,14 @@ public abstract class FrontendConnection extends AbstractConnection {
         isAccepted = accepted;
     }
 
+    public void setClientFlags(long clientFlags) {
+        this.clientFlags = clientFlags;
+    }
+
+    public long getClientFlags() {
+        return clientFlags;
+    }
+
     public void setProcessor(NIOProcessor processor) {
         super.setProcessor(processor);
         processor.addFrontend(this);
@@ -126,6 +138,7 @@ public abstract class FrontendConnection extends AbstractConnection {
     public void setMultStatementAllow(boolean multStatementAllow) {
         this.multStatementAllow = multStatementAllow;
     }
+
     public void setQueryHandler(FrontendQueryHandler queryHandler) {
         this.queryHandler = queryHandler;
     }
@@ -160,10 +173,7 @@ public abstract class FrontendConnection extends AbstractConnection {
 
     public void setUser(String user) {
         this.user = user;
-        Boolean result = privileges.isReadOnly(user);
-        if (result != null) {
-            this.userReadOnly = result;
-        }
+        this.userReadOnly = privileges.isReadOnly(user);
     }
 
     public String getSchema() {
@@ -211,6 +221,7 @@ public abstract class FrontendConnection extends AbstractConnection {
     }
 
     protected void writeErrMessage(byte id, int vendorCode, String sqlState, String msg) {
+        markFinished();
         ErrorPacket err = new ErrorPacket();
         err.setPacketId(id);
         err.setErrNo(vendorCode);
@@ -223,8 +234,9 @@ public abstract class FrontendConnection extends AbstractConnection {
 
     public abstract void startProcess();
 
-    public void initDB(byte[] data) {
+    protected abstract void markFinished();
 
+    public void initDB(byte[] data) {
         MySQLMessage mm = new MySQLMessage(data);
         mm.position(5);
         String db = null;
@@ -343,6 +355,7 @@ public abstract class FrontendConnection extends AbstractConnection {
             writeErrMessage(ErrorCode.ER_UNKNOWN_CHARACTER_SET, "Unknown charset '" + charsetName.getClient() + "'");
             return;
         }
+        SerializableLock.getInstance().lock(this.id);
         this.query(sql);
     }
 
@@ -381,8 +394,83 @@ public abstract class FrontendConnection extends AbstractConnection {
         }
     }
 
-    public void stmtReset(byte[] data) {
+    public void setOption(byte[] data) {
+        MySQLMessage mm = new MySQLMessage(data); //see sql\protocol_classic.cc parse_packet
+        if (mm.length() == 7) {
+            mm.position(5);
+            int optCommand = mm.readUB2();
+            if (optCommand == 0) {
+                this.multStatementAllow = true;
+                write(writeToBuffer(EOFPacket.EOF, allocate()));
+                return;
+            } else if (optCommand == 1) {
+                this.multStatementAllow = false;
+                write(writeToBuffer(EOFPacket.EOF, allocate()));
+                return;
+            }
+        }
+        writeErrMessage(ErrorCode.ER_UNKNOWN_COM_ERROR, "Set Option ERROR!");
+    }
 
+    //  mysql-server\sql\sql_class.cc void THD::cleanup_connection(void)
+    public void resetConnection() {
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("resetConnection request");
+        }
+        innerResetConnection();
+        this.write(OkPacket.OK);
+    }
+
+    private void innerResetConnection() {
+        if (this instanceof ServerConnection) {
+            ServerConnection sc = (ServerConnection) this;
+            sc.innerCleanUp();
+        }
+    }
+
+    public void changeUser(byte[] data, ChangeUserPacket changeUserPacket, AtomicBoolean isAuthSwitch) {
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("changeUser request");
+        }
+        innerResetConnection();
+        changeUserPacket.read(data);
+        if ("mysql_native_password".equals(changeUserPacket.getAuthPlugin())) {
+            AuthSwitchRequestPackage authSwitch = new AuthSwitchRequestPackage(changeUserPacket.getAuthPlugin().getBytes(), this.getSeed());
+            authSwitch.setPacketId(changeUserPacket.getPacketId() + 1);
+            isAuthSwitch.set(true);
+            authSwitch.write(this);
+        } else {
+            writeErrMessage((byte) (changeUserPacket.getPacketId() + 1), ErrorCode.ER_PLUGIN_IS_NOT_LOADED, "NOT SUPPORT THIS PLUGIN!");
+        }
+    }
+
+    public void changeUserAuthSwitch(byte[] data, ChangeUserPacket changeUserPacket) {
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("changeUser AuthSwitch request");
+        }
+        AuthSwitchResponsePackage authSwitchResponse = new AuthSwitchResponsePackage();
+        authSwitchResponse.read(data);
+        changeUserPacket.setPassword(authSwitchResponse.getAuthPluginData());
+        String errMsg = AuthUtil.authority(this, changeUserPacket.getUser(), changeUserPacket.getPassword(), changeUserPacket.getDatabase(), false);
+        byte packetId = (byte) (authSwitchResponse.getPacketId() + 1);
+        if (errMsg == null) {
+            changeUserSuccess(changeUserPacket, packetId);
+        } else {
+            writeErrMessage(packetId, ErrorCode.ER_ACCESS_DENIED_ERROR, errMsg);
+        }
+    }
+
+    private void changeUserSuccess(ChangeUserPacket newUser, byte packetId) {
+        this.setUser(newUser.getUser());
+        this.setSchema(newUser.getDatabase());
+        this.initCharsetIndex(newUser.getCharsetIndex());
+        OkPacket ok = new OkPacket();
+        ok.read(OkPacket.OK);
+        ok.setPacketId(packetId);
+        ok.write(this);
+    }
+
+    public void stmtReset(byte[] data) {
         if (prepareHandler != null) {
             prepareHandler.reset(data);
         } else {
@@ -425,7 +513,7 @@ public abstract class FrontendConnection extends AbstractConnection {
 
     @Override
     public void register() throws IOException {
-        if (!isClosed.get()) {
+        if (!isClosed) {
 
             // generate auth data
             byte[] rand1 = RandomUtil.randomBytes(8);
@@ -449,9 +537,6 @@ public abstract class FrontendConnection extends AbstractConnection {
             hs.setServerStatus(2);
             hs.setRestOfScrambleBuff(rand2);
             hs.write(this);
-
-            // async read response
-            this.asyncRead();
         }
     }
 
@@ -531,7 +616,7 @@ public abstract class FrontendConnection extends AbstractConnection {
     public String toString() {
         return "[thread=" +
                 Thread.currentThread().getName() + ",class=" +
-                getClass().getSimpleName() + ",id=" + id +
+                getClass().getSimpleName() + ",frontId=" + id +
                 ",host=" + host + ",port=" + port +
                 ",schema=" + schema + ']';
     }
@@ -546,7 +631,7 @@ public abstract class FrontendConnection extends AbstractConnection {
     @Override
     public void connectionCount() {
         if (this.isAuthenticated) {
-            DbleServer.getInstance().getUserManager().countDown(user, (this instanceof ManagerConnection));
+            FrontendUserManager.getInstance().countDown(user, (this instanceof ManagerConnection));
         }
     }
 }

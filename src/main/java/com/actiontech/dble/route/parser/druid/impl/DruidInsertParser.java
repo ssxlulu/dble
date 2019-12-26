@@ -12,7 +12,9 @@ import com.actiontech.dble.config.ServerPrivileges;
 import com.actiontech.dble.config.ServerPrivileges.CheckType;
 import com.actiontech.dble.config.model.SchemaConfig;
 import com.actiontech.dble.config.model.TableConfig;
+import com.actiontech.dble.singleton.ProxyMeta;
 import com.actiontech.dble.meta.protocol.StructureMeta;
+import com.actiontech.dble.net.ConnectionException;
 import com.actiontech.dble.plan.common.ptr.StringPtr;
 import com.actiontech.dble.route.RouteResultset;
 import com.actiontech.dble.route.RouteResultsetNode;
@@ -20,9 +22,11 @@ import com.actiontech.dble.route.function.AbstractPartitionAlgorithm;
 import com.actiontech.dble.route.parser.druid.ServerSchemaStatVisitor;
 import com.actiontech.dble.route.util.RouterUtil;
 import com.actiontech.dble.server.ServerConnection;
+import com.actiontech.dble.server.handler.ExplainHandler;
 import com.actiontech.dble.server.util.GlobalTableUtil;
 import com.actiontech.dble.server.util.SchemaUtil;
 import com.actiontech.dble.server.util.SchemaUtil.SchemaInfo;
+import com.actiontech.dble.singleton.SequenceManager;
 import com.actiontech.dble.util.StringUtil;
 import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLExpr;
@@ -41,7 +45,7 @@ import java.util.*;
 
 public class DruidInsertParser extends DruidInsertReplaceParser {
     @Override
-    public SchemaConfig visitorParse(SchemaConfig schema, RouteResultset rrs, SQLStatement stmt, ServerSchemaStatVisitor visitor, ServerConnection sc)
+    public SchemaConfig visitorParse(SchemaConfig schema, RouteResultset rrs, SQLStatement stmt, ServerSchemaStatVisitor visitor, ServerConnection sc, boolean isExplain)
             throws SQLException {
 
         MySqlInsertStatement insert = (MySqlInsertStatement) stmt;
@@ -95,7 +99,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
         }
         // insert childTable will finished router while parser
         if (tc.getParentTC() != null) {
-            parserChildTable(schemaInfo, rrs, insert, sc);
+            parserChildTable(schemaInfo, rrs, insert, sc, isExplain);
             return schema;
         }
         String partitionColumn = tc.getPartitionColumn();
@@ -141,7 +145,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
     }
 
     private void parserChildTable(SchemaInfo schemaInfo, final RouteResultset rrs, MySqlInsertStatement insertStmt,
-                                  final ServerConnection sc) throws SQLNonTransientException {
+                                  final ServerConnection sc, boolean isExplain) throws SQLNonTransientException {
 
         final SchemaConfig schema = schemaInfo.getSchemaConfig();
         String tableName = schemaInfo.getTable();
@@ -173,16 +177,26 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
                         LOGGER.debug("to find root parent's node sql :" + findRootTBSql);
                     }
                     FetchStoreNodeOfChildTableHandler fetchHandler = new FetchStoreNodeOfChildTableHandler(findRootTBSql, sc.getSession2());
-                    String dn = fetchHandler.execute(schema.getName(), tc.getRootParent().getDataNodes());
-                    if (dn == null) {
-                        sc.writeErrMessage(ErrorCode.ER_UNKNOWN_ERROR, "can't find (root) parent sharding node for sql:" + sql);
-                        return;
+                    try {
+                        String dn = fetchHandler.execute(schema.getName(), tc.getRootParent().getDataNodes());
+                        if (dn == null) {
+                            sc.writeErrMessage(ErrorCode.ER_UNKNOWN_ERROR, "can't find (root) parent sharding node for sql:" + sql);
+                            return;
+                        }
+                        if (LOGGER.isDebugEnabled()) {
+                            LOGGER.debug("found partition node for child table to insert " + dn + " sql :" + sql);
+                        }
+                        RouterUtil.routeToSingleNode(rrs, dn);
+                        if (isExplain) {
+                            ExplainHandler.writeOutHeadAndEof(sc, rrs);
+                        } else {
+                            sc.getSession2().execute(rrs);
+                        }
+                    } catch (ConnectionException e) {
+                        sc.setTxInterrupt(e.toString());
+                        sc.writeErrMessage(ErrorCode.ER_UNKNOWN_ERROR, e.toString());
                     }
-                    if (LOGGER.isDebugEnabled()) {
-                        LOGGER.debug("found partition node for child table to insert " + dn + " sql :" + sql);
-                    }
-                    RouterUtil.routeToSingleNode(rrs, dn);
-                    sc.getSession2().execute(rrs);
+
                 }
             });
         }
@@ -272,9 +286,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
                 LOGGER.info(msg);
                 throw new SQLNonTransientException(msg);
             }
-            if (nodeValuesMap.get(nodeIndex) == null) {
-                nodeValuesMap.put(nodeIndex, new ArrayList<ValuesClause>());
-            }
+            nodeValuesMap.putIfAbsent(nodeIndex, new ArrayList<ValuesClause>());
             nodeValuesMap.get(nodeIndex).add(valueClause);
         }
 
@@ -328,7 +340,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
     private String convertInsertSQL(SchemaInfo schemaInfo, MySqlInsertStatement insert, String originSql, TableConfig tc,
                                     boolean isGlobalCheck) throws SQLNonTransientException {
 
-        StructureMeta.TableMeta orgTbMeta = DbleServer.getInstance().getTmManager().getSyncTableMeta(schemaInfo.getSchema(), schemaInfo.getTable());
+        StructureMeta.TableMeta orgTbMeta = ProxyMeta.getInstance().getTmManager().getSyncTableMeta(schemaInfo.getSchema(), schemaInfo.getTable());
         if (orgTbMeta == null)
             return originSql;
 
@@ -347,8 +359,9 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
         if (insert.isIgnore()) {
             sb.append("ignore ");
         }
-        sb.append("into ");
+        sb.append("into `");
         sb.append(schemaInfo.getTable());
+        sb.append("`");
 
         List<SQLExpr> columns = insert.getColumns();
 
@@ -358,7 +371,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
         // insert without columns :insert into t values(xxx,xxx)
         if (columns == null || columns.size() <= 0) {
             if (isAutoIncrement) {
-                autoIncrement = getIncrementKeyIndex(schemaInfo, tc.getTrueIncrementColumn());
+                autoIncrement = getIncrementKeyIndex(schemaInfo, tc.getIncrementColumn());
             }
             colSize = orgTbMeta.getColumnsList().size();
             idxGlobal = getIdxGlobalByMeta(isGlobalCheck, orgTbMeta, sb, colSize);
@@ -366,14 +379,14 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
             genColumnNames(tc, isGlobalCheck, isAutoIncrement, sb, columns);
             colSize = columns.size();
             if (isAutoIncrement) {
-                getIncrementKeyIndex(schemaInfo, tc.getTrueIncrementColumn());
+                getIncrementKeyIndex(schemaInfo, tc.getIncrementColumn());
                 autoIncrement = columns.size();
-                sb.append(",").append(tc.getTrueIncrementColumn());
+                sb.append(",").append("`").append(tc.getIncrementColumn()).append("`");
                 colSize++;
             }
             if (isGlobalCheck) {
                 idxGlobal = isAutoIncrement ? columns.size() + 1 : columns.size();
-                sb.append(",").append(GlobalTableUtil.GLOBAL_TABLE_CHECK_COLUMN);
+                sb.append(",").append("`").append(GlobalTableUtil.GLOBAL_TABLE_CHECK_COLUMN).append("`");
                 colSize++;
             }
             sb.append(")");
@@ -408,9 +421,9 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
         for (int i = 0; i < columns.size(); i++) {
             String columnName = columns.get(i).toString();
             if (i < columns.size() - 1) {
-                sb.append(columnName).append(",");
+                sb.append("`").append(StringUtil.removeBackQuote(columnName)).append("`").append(",");
             } else {
-                sb.append(columnName);
+                sb.append("`").append(StringUtil.removeBackQuote(columnName)).append("`");
             }
             String simpleColumnName = StringUtil.removeBackQuote(columnName);
             if (isGlobalCheck && simpleColumnName.equalsIgnoreCase(GlobalTableUtil.GLOBAL_TABLE_CHECK_COLUMN)) {
@@ -418,7 +431,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
                 LOGGER.info(msg);
                 throw new SQLNonTransientException(msg);
             }
-            if (isAutoIncrement && simpleColumnName.equalsIgnoreCase(tc.getTrueIncrementColumn())) {
+            if (isAutoIncrement && simpleColumnName.equalsIgnoreCase(tc.getIncrementColumn())) {
                 String msg = "In insert Syntax, you can't set value for Autoincrement column!";
                 LOGGER.info(msg);
                 throw new SQLNonTransientException(msg);
@@ -483,7 +496,7 @@ public class DruidInsertParser extends DruidInsertReplaceParser {
             if (i == idxGlobal) {
                 sb.append(String.valueOf(new Date().getTime()));
             } else if (i == autoIncrement) {
-                long id = DbleServer.getInstance().getSequenceHandler().nextId(tableKey);
+                long id = SequenceManager.getHandler().nextId(tableKey);
                 sb.append(id);
             } else {
                 String value = SQLUtils.toMySqlString(values.get(iValue++));

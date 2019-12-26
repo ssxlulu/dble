@@ -49,22 +49,24 @@ public final class SystemConfig {
     private int serverBacklog = 2048;
     private int serverNodeId = 1;
     private long showBinlogStatusTimeout = 60 * 1000;
-    private int maxCon = 1024;
+    private int maxCon = 0;
     //option
     private int useCompression = 0;
     private int usingAIO = 0;
     private boolean useZKSwitch = true;
     private int useThreadUsageStat = 0;
     private int usePerformanceMode = 0;
+    private int useSerializableMode = 0;
 
     //query time cost statistics
     private int useCostTimeStat = 0;
     private int maxCostStatSize = 100;
     private int costSamplePercent = 1;
     //connection
-    private String charset = "utf8";
-    private int maxPacketSize = 16 * 1024 * 1024;
+    private String charset = "utf8mb4";
+    private int maxPacketSize = 4 * 1024 * 1024;
     private int txIsolation = Isolations.REPEATABLE_READ;
+    private int autocommit = 1;
 
     //consistency
     private int checkTableConsistency = 0;
@@ -160,6 +162,7 @@ public final class SystemConfig {
     private int maxCharsPerColumn = 65535; // 128k,65535 chars
     //errors
     private ProblemReporter problemReporter;
+    private boolean useOuterHa = false;
 
     public SystemConfig(ProblemReporter problemReporter) {
         this.problemReporter = problemReporter;
@@ -277,7 +280,7 @@ public final class SystemConfig {
 
     @SuppressWarnings("unused")
     public void setMaxPacketSize(int maxPacketSize) {
-        if (maxPacketSize > 0) {
+        if (maxPacketSize >= 1024 && maxPacketSize <= 1073741824) {
             this.maxPacketSize = maxPacketSize;
         } else if (this.problemReporter != null) {
             problemReporter.warn(String.format(WARNING_FORMATE, "maxPacketSize", maxPacketSize, this.maxPacketSize));
@@ -602,6 +605,20 @@ public final class SystemConfig {
             problemReporter.warn(String.format(WARNING_FORMATE, "txIsolation", txIsolation, this.txIsolation));
         }
     }
+
+    public int getAutocommit() {
+        return autocommit;
+    }
+
+    @SuppressWarnings("unused")
+    public void setAutocommit(int autocommit) {
+        if (autocommit >= 0 && autocommit <= 1) {
+            this.autocommit = autocommit;
+        } else if (this.problemReporter != null) {
+            problemReporter.warn(String.format(WARNING_FORMATE, "autocommit", autocommit, this.autocommit));
+        }
+    }
+
 
     public int getSqlRecordCount() {
         return sqlRecordCount;
@@ -989,6 +1006,7 @@ public final class SystemConfig {
     public int getMaxCostStatSize() {
         return maxCostStatSize;
     }
+
     @SuppressWarnings("unused")
     public void setMaxCostStatSize(int maxCostStatSize) {
         if (maxCostStatSize > 0) {
@@ -1001,6 +1019,7 @@ public final class SystemConfig {
     public int getCostSamplePercent() {
         return costSamplePercent;
     }
+
     @SuppressWarnings("unused")
     public void setCostSamplePercent(int costSamplePercent) {
         if (costSamplePercent >= 0 && costSamplePercent <= 100) {
@@ -1036,6 +1055,19 @@ public final class SystemConfig {
             problemReporter.warn(String.format(WARNING_FORMATE, "usePerformanceMode", usePerformanceMode, this.usePerformanceMode));
         }
     }
+
+    public int getUseSerializableMode() {
+        return useSerializableMode;
+    }
+    @SuppressWarnings("unused")
+    public void setUseSerializableMode(int useSerializableMode) {
+        if (useSerializableMode >= 0 && useSerializableMode <= 1) {
+            this.useSerializableMode = useSerializableMode;
+        } else if (this.problemReporter != null) {
+            problemReporter.warn(String.format(WARNING_FORMATE, "useSerializableMode", useSerializableMode, this.useSerializableMode));
+        }
+    }
+
 
     public int getWriteToBackendExecutor() {
         return writeToBackendExecutor;
@@ -1167,6 +1199,15 @@ public final class SystemConfig {
         }
     }
 
+
+    public boolean isUseOuterHa() {
+        return useOuterHa;
+    }
+
+    public void setUseOuterHa(boolean useOuterHa) {
+        this.useOuterHa = useOuterHa;
+    }
+
     public int getXaRetryCount() {
         return xaRetryCount;
     }
@@ -1203,11 +1244,13 @@ public final class SystemConfig {
                 ", useZKSwitch=" + useZKSwitch +
                 ", useThreadUsageStat=" + useThreadUsageStat +
                 ", usePerformanceMode=" + usePerformanceMode +
+                ", useSerializableMode=" + useSerializableMode +
                 ", useCostTimeStat=" + useCostTimeStat +
                 ", maxCostStatSize=" + maxCostStatSize +
                 ", costSamplePercent=" + costSamplePercent +
                 ", charset=" + charset +
                 ", maxPacketSize=" + maxPacketSize +
+                ", autocommit=" + autocommit +
                 ", txIsolation=" + txIsolation +
                 ", checkTableConsistency=" + checkTableConsistency +
                 ", checkTableConsistencyPeriod=" + checkTableConsistencyPeriod +
@@ -1264,16 +1307,5 @@ public final class SystemConfig {
                 ", xaRetryCount=" + xaRetryCount +
                 "]";
     }
-
-    //tmp
-    public int getUseOldMetaInit() {
-        return useOldMetaInit;
-    }
-
-    public void setUseOldMetaInit(int useOldMetaInit) {
-        this.useOldMetaInit = useOldMetaInit;
-    }
-
-    private int useOldMetaInit = 0;
 
 }
